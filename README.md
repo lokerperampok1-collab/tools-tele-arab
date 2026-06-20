@@ -53,8 +53,6 @@ Isi semua variabel:
 ```env
 API_ID=123456
 API_HASH=abc123def456...
-PHONE_NUMBER=+628xxxxxxxxxx
-TWO_FA_PASSWORD=
 BOT_TOKEN=123456:ABC-DEF...
 ADMIN_ID=123456789
 ```
