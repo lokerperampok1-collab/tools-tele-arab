@@ -13,6 +13,7 @@ import asyncio
 import csv
 import random
 import time
+import re
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -87,14 +88,15 @@ def get_active_phone() -> Optional[str]:
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 
-async def check_session() -> dict:
+async def check_session(phone: Optional[str] = None) -> dict:
     """
-    Mengecek apakah ada session yang masih valid.
+    Mengecek apakah session tertentu (atau session pertama jika None) masih valid.
 
     Returns:
         dict: {"authorized": bool, "user": User|None, "phone": str|None, "error": str|None}
     """
-    phone = get_active_phone()
+    if not phone:
+        phone = get_active_phone()
     if not phone:
         return {"authorized": False, "user": None, "phone": None, "error": None}
 
@@ -249,6 +251,7 @@ async def verify_2fa(phone: str, password: str) -> dict:
 
 
 async def scrape_members(
+    phone: str,
     source_group_input: str,
     progress_callback: Optional[Callable] = None,
 ) -> dict:
@@ -256,15 +259,15 @@ async def scrape_members(
     Scrape member dari grup sumber dan simpan ke CSV.
 
     Args:
+        phone: Nomor telepon sesi yang digunakan.
         source_group_input: Username/link/ID grup sumber.
         progress_callback: Async callback(message) untuk update progress.
 
     Returns:
         dict dengan hasil scraping.
     """
-    phone = get_active_phone()
     if not phone:
-        return {"success": False, "error": "Belum ada session! Login terlebih dahulu."}
+        return {"success": False, "error": "Nomor telepon tidak ditentukan."}
 
     client = get_client(phone)
 
@@ -376,6 +379,144 @@ async def scrape_members(
         await client.disconnect()
 
 
+async def scrape_contacts(
+    phone: str,
+    progress_callback: Optional[Callable] = None,
+) -> dict:
+    """
+    Scrape member dari daftar kontak akun dan simpan ke CSV.
+
+    Args:
+        phone: Nomor telepon sesi yang digunakan.
+        progress_callback: Async callback(message) untuk update progress.
+
+    Returns:
+        dict dengan hasil scraping.
+    """
+    if not phone:
+        return {"success": False, "error": "Nomor telepon tidak ditentukan."}
+
+    client = get_client(phone)
+
+    async def _progress(msg):
+        if progress_callback:
+            await progress_callback(msg)
+
+    try:
+        await client.connect()
+        if not await client.is_user_authorized():
+            return {"success": False, "error": "Session expired! Login ulang."}
+
+        await _progress("🔍 Mengambil daftar kontak dari akun...")
+
+        from telethon.tl.functions.contacts import GetContactsRequest
+
+        # Ambil kontak
+        contacts_result = await client(GetContactsRequest(hash=0))
+        users = getattr(contacts_result, "users", [])
+
+        if not users:
+            return {"success": False, "error": "Tidak ada kontak yang ditemukan atau gagal mengambil kontak."}
+
+        await _progress(f"✅ Ditemukan {len(users)} kontak.\n⏳ Menyaring dan menyimpan...")
+
+        filtered = []
+        skipped_bots = 0
+        skipped_deleted = 0
+
+        for user in users:
+            if user.bot:
+                skipped_bots += 1
+                continue
+            if user.deleted:
+                skipped_deleted += 1
+                continue
+
+            filtered.append({
+                "user_id": user.id,
+                "access_hash": user.access_hash,
+                "username": user.username or "",
+                "first_name": user.first_name or "",
+                "last_name": user.last_name or "",
+            })
+
+        if not filtered:
+            return {
+                "success": False,
+                "error": "Tidak ada kontak valid yang bisa disimpan.",
+            }
+
+        # Save CSV
+        with open(MEMBERS_CSV, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(
+                f,
+                fieldnames=["user_id", "access_hash", "username", "first_name", "last_name"],
+            )
+            writer.writeheader()
+            writer.writerows(filtered)
+
+        logger.info(f"Scraped {len(filtered)} contacts")
+
+        return {
+            "success": True,
+            "total": len(users),
+            "saved": len(filtered),
+            "skipped_bots": skipped_bots,
+            "skipped_deleted": skipped_deleted,
+            "error": None,
+        }
+
+    except Exception as e:
+        return {"success": False, "error": f"Error: {type(e).__name__}: {e}"}
+    finally:
+        await client.disconnect()
+
+
+async def get_contacts_list(phone: str) -> dict:
+    """
+    Mengambil daftar kontak yang valid langsung ke memory (tanpa menulis ke CSV).
+
+    Returns:
+        dict: {"success": bool, "contacts": list[dict], "error": str|None}
+    """
+    if not phone:
+        return {"success": False, "contacts": [], "error": "Nomor telepon tidak ditentukan."}
+
+    client = get_client(phone)
+    try:
+        await client.connect()
+        if not await client.is_user_authorized():
+            return {"success": False, "contacts": [], "error": "Session expired! Login ulang."}
+
+        from telethon.tl.functions.contacts import GetContactsRequest
+
+        # Ambil kontak
+        contacts_result = await client(GetContactsRequest(hash=0))
+        users = getattr(contacts_result, "users", [])
+
+        filtered = []
+        for user in users:
+            if user.bot or user.deleted:
+                continue
+
+            filtered.append({
+                "user_id": user.id,
+                "access_hash": user.access_hash,
+                "username": user.username or "",
+                "first_name": user.first_name or "",
+                "last_name": user.last_name or "",
+            })
+
+        return {"success": True, "contacts": filtered, "error": None}
+
+    except Exception as e:
+        return {"success": False, "contacts": [], "error": f"Error: {type(e).__name__}: {e}"}
+    finally:
+        await client.disconnect()
+
+
+
+
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #  ADD MEMBER OPERATIONS
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -393,16 +534,16 @@ def load_members() -> list[dict]:
     return members
 
 
-async def resolve_group(group_input: str) -> dict:
+async def resolve_group(phone: str, group_input: str) -> dict:
     """
     Resolve nama grup target dan kembalikan info.
+    Jika user belum masuk ke grup/channel tersebut, bot akan otomatis bergabung (join) terlebih dahulu.
 
     Returns:
         dict: {"success": bool, "title": str, "error": str|None}
     """
-    phone = get_active_phone()
     if not phone:
-        return {"success": False, "title": "", "error": "Belum ada session!"}
+        return {"success": False, "title": "", "error": "Nomor telepon tidak ditentukan."}
 
     client = get_client(phone)
     try:
@@ -410,6 +551,50 @@ async def resolve_group(group_input: str) -> dict:
         if not await client.is_user_authorized():
             return {"success": False, "title": "", "error": "Session expired!"}
 
+        from telethon.tl.functions.channels import JoinChannelRequest
+        from telethon.tl.functions.messages import ImportChatInviteRequest
+
+        group_input = group_input.strip()
+
+        # Regex untuk link private (mengambil hash setelah /+ atau /joinchat/)
+        private_match = re.search(r"(?:https?://)?(?:www\.)?(?:t\.me|telegram\.me)/(?:\+|joinchat/)([a-zA-Z0-9_\-]+)", group_input)
+
+        if private_match:
+            invite_hash = private_match.group(1)
+            try:
+                # Coba join grup private
+                await client(ImportChatInviteRequest(invite_hash))
+            except UserAlreadyParticipantError:
+                # Sudah bergabung, abaikan
+                pass
+            except Exception as e:
+                logger.warning(f"Gagal bergabung ke grup private dengan hash {invite_hash}: {e}")
+        else:
+            # Check link publik atau username
+            pub_match = re.search(r"(?:https?://)?(?:www\.)?(?:t\.me|telegram\.me)/([a-zA-Z0-9_]{5,})", group_input)
+            entity_identifier = pub_match.group(1) if pub_match else group_input
+
+            if isinstance(entity_identifier, str) and entity_identifier.startswith("@"):
+                entity_identifier = entity_identifier[1:]
+
+            try:
+                entity = await client.get_entity(entity_identifier)
+                # JoinChannelRequest digunakan untuk Channel dan Supergroup
+                from telethon.tl.types import Channel
+                if isinstance(entity, Channel):
+                    try:
+                        await client(JoinChannelRequest(entity))
+                    except Exception as join_err:
+                        logger.warning(f"Gagal bergabung ke channel/supergrup publik: {join_err}")
+            except Exception as e:
+                # Jika tidak bisa resolve entity, coba langsung join menggunakan username/identifier
+                if isinstance(entity_identifier, str) and not entity_identifier.startswith("-") and not entity_identifier.isdigit():
+                    try:
+                        await client(JoinChannelRequest(entity_identifier))
+                    except Exception as join_err:
+                        logger.warning(f"Gagal bergabung via username/identifier {entity_identifier}: {join_err}")
+
+        # Ambil kembali data entity untuk memastikan dan mendapatkan judul grup
         entity = await client.get_entity(group_input)
         title = getattr(entity, "title", group_input)
         return {"success": True, "title": title, "error": None}
@@ -420,6 +605,7 @@ async def resolve_group(group_input: str) -> dict:
 
 
 async def add_members(
+    phone: str,
     target_group_input: str,
     members: list[dict],
     progress_callback: Optional[Callable] = None,
@@ -428,6 +614,7 @@ async def add_members(
     Menambahkan member ke grup target dengan rate limiting dan error handling.
 
     Args:
+        phone: Nomor telepon sesi yang digunakan.
         target_group_input: Username/link/ID grup target.
         members: List of dict dari CSV.
         progress_callback: Async callback(message) untuk update progress.
@@ -435,9 +622,8 @@ async def add_members(
     Returns:
         dict hasil akhir dengan statistik.
     """
-    phone = get_active_phone()
     if not phone:
-        return {"success": False, "error": "Belum ada session!"}
+        return {"success": False, "error": "Nomor telepon tidak ditentukan."}
 
     client = get_client(phone)
 
@@ -485,7 +671,7 @@ async def add_members(
                 user_peer = InputPeerUser(user_id=int(uid), access_hash=int(ahash))
                 await client(InviteToChannelRequest(target_group, [user_peer]))
                 added += 1
-                logger.info(f"Added: {display}")
+                logger.info(f"[{phone}] Added: {display}")
 
                 # Update progress setiap 5 member atau yang pertama
                 if added == 1 or added % 5 == 0:
@@ -496,31 +682,31 @@ async def add_members(
 
             except UserAlreadyParticipantError:
                 skipped += 1
-                logger.info(f"Already member: {display}")
+                logger.info(f"[{phone}] Already member: {display}")
 
             except UserPrivacyRestrictedError:
                 skipped += 1
-                logger.info(f"Privacy restricted: {display}")
+                logger.info(f"[{phone}] Privacy restricted: {display}")
 
             except UserNotMutualContactError:
                 skipped += 1
-                logger.info(f"Not mutual contact: {display}")
+                logger.info(f"[{phone}] Not mutual contact: {display}")
 
             except UserChannelsTooMuchError:
                 skipped += 1
-                logger.info(f"Too many channels: {display}")
+                logger.info(f"[{phone}] Too many channels: {display}")
 
             except UserKickedError:
                 skipped += 1
-                logger.info(f"User was kicked: {display}")
+                logger.info(f"[{phone}] User was kicked: {display}")
 
             except UserBannedInChannelError:
                 skipped += 1
-                logger.info(f"User banned: {display}")
+                logger.info(f"[{phone}] User banned: {display}")
 
             except InputUserDeactivatedError:
                 skipped += 1
-                logger.info(f"Deactivated account: {display}")
+                logger.info(f"[{phone}] Deactivated account: {display}")
 
             except ChatWriteForbiddenError:
                 stopped_reason = "Akun tidak punya izin invite di grup target!"
@@ -533,7 +719,7 @@ async def add_members(
                     f"⚠️ **FloodWait!** Telegram minta tunggu {e.seconds} detik.\n"
                     f"⏳ Auto-pause {wait_sec} detik... Jangan panic."
                 )
-                logger.warning(f"FloodWait: {e.seconds}s, pausing {wait_sec}s")
+                logger.warning(f"[{phone}] FloodWait: {e.seconds}s, pausing {wait_sec}s")
                 await asyncio.sleep(wait_sec)
                 await _progress("▶️ Melanjutkan setelah FloodWait...")
                 failed += 1
@@ -544,12 +730,12 @@ async def add_members(
                     "Coba lagi dalam beberapa jam."
                 )
                 failed += 1
-                logger.error("PeerFloodError — stopping")
+                logger.error(f"[{phone}] PeerFloodError — stopping")
                 break
 
             except Exception as e:
                 failed += 1
-                logger.error(f"Unexpected error for {display}: {type(e).__name__}: {e}")
+                logger.error(f"[{phone}] Unexpected error for {display}: {type(e).__name__}: {e}")
 
             # Delay acak anti-ban
             if idx < len(members) and not stopped_reason:
@@ -570,6 +756,157 @@ async def add_members(
             "stopped_reason": stopped_reason,
             "group_title": group_title,
             "error": None,
+        }
+
+    except Exception as e:
+        return {"success": False, "error": f"Error: {type(e).__name__}: {e}"}
+    finally:
+        await client.disconnect()
+
+
+def generate_phone_numbers(base_number: str, count: int) -> list[str]:
+    """
+    Men-generate daftar nomor telepon berurutan (sekuensial) dimulai dari base_number.
+    """
+    has_plus = base_number.startswith("+")
+    digits_only = "".join(c for c in base_number if c.isdigit())
+    if not digits_only:
+        return []
+
+    length = len(digits_only)
+    base_int = int(digits_only)
+
+    numbers = []
+    for i in range(count):
+        current_int = base_int + i
+        current_str = f"{current_int:0{length}d}"
+        if has_plus:
+            numbers.append("+" + current_str)
+        else:
+            numbers.append(current_str)
+
+    return numbers
+
+
+async def validate_phone_numbers(
+    phone: str,
+    numbers_list: list[str],
+    prefix_name: str,
+    progress_callback: Optional[Callable] = None,
+) -> dict:
+    """
+    Validasi daftar nomor telepon di Telegram menggunakan API ImportContacts.
+    Nomor yang valid akan disimpan ke members.csv dan disimpan sebagai kontak di akun Telegram.
+    """
+    if not phone:
+        return {"success": False, "error": "Nomor telepon tidak ditentukan."}
+
+    client = get_client(phone)
+
+    async def _progress(msg):
+        if progress_callback:
+            await progress_callback(msg)
+
+    try:
+        await client.connect()
+        if not await client.is_user_authorized():
+            return {"success": False, "error": "Session expired! Login ulang."}
+
+        await _progress(f"🔍 Mulai memvalidasi {len(numbers_list)} nomor di Telegram...")
+
+        from telethon.tl.functions.contacts import ImportContactsRequest
+        from telethon.tl.types import InputPhoneContact
+
+        # Buat pemetaan nomor telepon (digit saja) ke indeks urutannya (1-based)
+        phone_to_index = {}
+        for idx, num in enumerate(numbers_list):
+            norm = "".join(c for c in num if c.isdigit())
+            phone_to_index[norm] = idx + 1
+
+        valid_users = []
+        batch_size = 10
+        total_checked = 0
+
+        for i in range(0, len(numbers_list), batch_size):
+            batch = numbers_list[i:i+batch_size]
+            contacts = []
+
+            for idx_in_batch, num in enumerate(batch):
+                cid = random.randint(1000000, 9999999)
+                global_idx = i + idx_in_batch + 1
+                # Simpan kontak dengan nama prefix_name(indeks)
+                first_name = f"{prefix_name}({global_idx})"
+                contacts.append(InputPhoneContact(client_id=cid, phone=num, first_name=first_name, last_name=""))
+
+            try:
+                import_res = await client(ImportContactsRequest(contacts))
+                imported_users = getattr(import_res, "users", [])
+
+                for user in imported_users:
+                    if user.bot or user.deleted:
+                        continue
+
+                    # Ambil nama yang kita simpan (atau fallback)
+                    norm_phone = "".join(c for c in (user.phone or "") if c.isdigit())
+                    idx = phone_to_index.get(norm_phone)
+                    if idx is not None:
+                        v_name = f"{prefix_name}({idx})"
+                    else:
+                        v_name = f"{prefix_name}({user.phone or num})"
+                    valid_users.append({
+                        "user_id": user.id,
+                        "access_hash": user.access_hash,
+                        "username": user.username or "",
+                        "first_name": v_name,
+                        "last_name": user.last_name or "",
+                    })
+
+                # CATATAN: Kita TIDAK memanggil DeleteContactsRequest di sini
+                # agar kontak-kontak yang valid ini tetap tersimpan di akun Telegram Anda.
+
+            except Exception as batch_err:
+                logger.error(f"Error pada batch {i}: {batch_err}")
+
+            total_checked += len(batch)
+            if total_checked % 20 == 0 or total_checked == len(numbers_list):
+                await _progress(
+                    f"📊 Progres Validasi: {total_checked}/{len(numbers_list)} nomor\n"
+                    f"✅ Aktif Telegram: **{len(valid_users)}**"
+                )
+
+            await asyncio.sleep(random.uniform(2, 4))
+
+        if not valid_users:
+            return {
+                "success": True,
+                "total_checked": total_checked,
+                "valid_count": 0,
+                "error": "Tidak ada nomor yang terdaftar di Telegram dari hasil generator."
+            }
+
+        # Simpan ke CSV members.csv agar bisa langsung dipakai di menu Add Member
+        with open(MEMBERS_CSV, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(
+                f,
+                fieldnames=["user_id", "access_hash", "username", "first_name", "last_name"],
+            )
+            writer.writeheader()
+            for u in valid_users:
+                writer.writerow({
+                    "user_id": u["user_id"],
+                    "access_hash": u["access_hash"],
+                    "username": u["username"],
+                    "first_name": u["first_name"],
+                    "last_name": u["last_name"],
+                })
+
+        logger.info(f"Validated {len(valid_users)} active Telegram accounts out of {total_checked} generated numbers")
+
+        return {
+            "success": True,
+            "total_checked": total_checked,
+            "valid_count": len(valid_users),
+            "error": None
         }
 
     except Exception as e:
