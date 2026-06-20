@@ -1,0 +1,24 @@
+# Environment & Credentials
+.env
+
+# Telegram Sessions
+sessions/*.session
+sessions/*.session-journal
+
+# Data files
+data/*.csv
+data/*.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# Logs
+logs/*.log
+
+# IDE
+.vscode/
+.idea/
