@@ -540,6 +540,90 @@ def load_members(csv_filename: str = "members.csv") -> list[dict]:
     return members
 
 
+async def _resolve_and_join_group(client, group_input: str):
+    """
+    Helper internal untuk me-resolve grup/channel dan otomatis bergabung (join) jika belum.
+    Mengembalikan entity grup yang valid.
+    """
+    from telethon.tl.functions.channels import JoinChannelRequest
+    from telethon.tl.functions.messages import ImportChatInviteRequest, CheckChatInviteRequest
+    from telethon.tl.types import ChatInviteAlready, Channel, Chat
+    from telethon.errors import UserAlreadyParticipantError
+
+    group_input = group_input.strip()
+    entity = None
+
+    # 1. Coba deteksi link private
+    private_match = re.search(r"(?:https?://)?(?:www\.)?(?:t\.me|telegram\.me)/(?:\+|joinchat/)([a-zA-Z0-9_\-]+)", group_input)
+    if private_match:
+        invite_hash = private_match.group(1)
+        try:
+            invite_info = await client(CheckChatInviteRequest(invite_hash))
+            if isinstance(invite_info, ChatInviteAlready):
+                entity = invite_info.chat
+            else:
+                # Belum bergabung, coba join
+                updates = await client(ImportChatInviteRequest(invite_hash))
+                if hasattr(updates, "chats") and updates.chats:
+                    entity = updates.chats[0]
+        except UserAlreadyParticipantError:
+            # Jika sudah join tapi CheckChatInviteRequest tidak mengembalikan entity
+            pass
+        except Exception as e:
+            logger.warning(f"Gagal bergabung ke grup private via hash {invite_hash}: {e}")
+            
+    # 2. Jika bukan link private atau langkah di atas belum mendapatkan entity
+    if not entity:
+        # Bersihkan link publik jika ada
+        pub_match = re.search(r"(?:https?://)?(?:www\.)?(?:t\.me|telegram\.me)/([a-zA-Z0-9_]{5,})", group_input)
+        entity_identifier = pub_match.group(1) if pub_match else group_input
+
+        if isinstance(entity_identifier, str) and entity_identifier.startswith("@"):
+            entity_identifier = entity_identifier[1:]
+
+        try:
+            entity = await client.get_entity(entity_identifier)
+            # Jika supergrup/channel publik, join jika belum join
+            if isinstance(entity, Channel):
+                try:
+                    await client(JoinChannelRequest(entity))
+                except Exception as join_err:
+                    logger.warning(f"Gagal bergabung ke channel/supergrup publik: {join_err}")
+        except Exception as e:
+            # Jika gagal get_entity, coba join langsung menggunakan username/identifier
+            if isinstance(entity_identifier, str) and not entity_identifier.startswith("-") and not entity_identifier.isdigit():
+                try:
+                    updates = await client(JoinChannelRequest(entity_identifier))
+                    if hasattr(updates, "chats") and updates.chats:
+                        entity = updates.chats[0]
+                except Exception as join_err:
+                    logger.warning(f"Gagal bergabung via username/identifier {entity_identifier}: {join_err}")
+
+    # 3. Fallback terakhir jika entity masih None
+    if not entity:
+        # Bersihkan prefix t.me/ jika ada untuk pencarian get_entity
+        clean_input = group_input
+        pub_match = re.search(r"(?:https?://)?(?:www\.)?(?:t\.me|telegram\.me)/([a-zA-Z0-9_]{5,})", group_input)
+        if pub_match:
+            clean_input = pub_match.group(1)
+        if isinstance(clean_input, str) and clean_input.startswith("@"):
+            clean_input = clean_input[1:]
+
+        try:
+            entity = await client.get_entity(clean_input)
+        except Exception:
+            # Cari dari dialog user
+            async for dialog in client.iter_dialogs():
+                if dialog.is_group or dialog.is_channel:
+                    if dialog.name == group_input:
+                        entity = dialog.entity
+                        break
+            if not entity:
+                raise ValueError(f"Tidak dapat menemukan atau mengakses grup '{group_input}'. Pastikan link/username benar.")
+
+    return entity
+
+
 async def resolve_group(phone: str, group_input: str) -> dict:
     """
     Resolve nama grup target dan kembalikan info.
@@ -557,51 +641,7 @@ async def resolve_group(phone: str, group_input: str) -> dict:
         if not await client.is_user_authorized():
             return {"success": False, "title": "", "error": "Session expired!"}
 
-        from telethon.tl.functions.channels import JoinChannelRequest
-        from telethon.tl.functions.messages import ImportChatInviteRequest
-
-        group_input = group_input.strip()
-
-        # Regex untuk link private (mengambil hash setelah /+ atau /joinchat/)
-        private_match = re.search(r"(?:https?://)?(?:www\.)?(?:t\.me|telegram\.me)/(?:\+|joinchat/)([a-zA-Z0-9_\-]+)", group_input)
-
-        if private_match:
-            invite_hash = private_match.group(1)
-            try:
-                # Coba join grup private
-                await client(ImportChatInviteRequest(invite_hash))
-            except UserAlreadyParticipantError:
-                # Sudah bergabung, abaikan
-                pass
-            except Exception as e:
-                logger.warning(f"Gagal bergabung ke grup private dengan hash {invite_hash}: {e}")
-        else:
-            # Check link publik atau username
-            pub_match = re.search(r"(?:https?://)?(?:www\.)?(?:t\.me|telegram\.me)/([a-zA-Z0-9_]{5,})", group_input)
-            entity_identifier = pub_match.group(1) if pub_match else group_input
-
-            if isinstance(entity_identifier, str) and entity_identifier.startswith("@"):
-                entity_identifier = entity_identifier[1:]
-
-            try:
-                entity = await client.get_entity(entity_identifier)
-                # JoinChannelRequest digunakan untuk Channel dan Supergroup
-                from telethon.tl.types import Channel
-                if isinstance(entity, Channel):
-                    try:
-                        await client(JoinChannelRequest(entity))
-                    except Exception as join_err:
-                        logger.warning(f"Gagal bergabung ke channel/supergrup publik: {join_err}")
-            except Exception as e:
-                # Jika tidak bisa resolve entity, coba langsung join menggunakan username/identifier
-                if isinstance(entity_identifier, str) and not entity_identifier.startswith("-") and not entity_identifier.isdigit():
-                    try:
-                        await client(JoinChannelRequest(entity_identifier))
-                    except Exception as join_err:
-                        logger.warning(f"Gagal bergabung via username/identifier {entity_identifier}: {join_err}")
-
-        # Ambil kembali data entity untuk memastikan dan mendapatkan judul grup
-        entity = await client.get_entity(group_input)
+        entity = await _resolve_and_join_group(client, group_input)
         title = getattr(entity, "title", group_input)
         return {"success": True, "title": title, "error": None}
     except (ValueError, Exception) as e:
@@ -642,11 +682,11 @@ async def add_members(
         if not await client.is_user_authorized():
             return {"success": False, "error": "Session expired! Login ulang."}
 
-        # Resolve target group
+        # Resolve target group and auto-join if not joined
         try:
-            target_group = await client.get_entity(target_group_input)
+            target_group = await _resolve_and_join_group(client, target_group_input)
         except Exception as e:
-            return {"success": False, "error": f"Grup target tidak ditemukan: {e}"}
+            return {"success": False, "error": f"Grup target tidak ditemukan atau gagal bergabung: {e}"}
 
         group_title = getattr(target_group, "title", target_group_input)
         await _progress(f"🎯 Target: **{group_title}**\n⏳ Memulai proses invite...\n")
