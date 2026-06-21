@@ -814,8 +814,22 @@ async def validate_phone_numbers(
 
         await _progress(f"🔍 Mulai memvalidasi {len(numbers_list)} nomor di Telegram...")
 
-        from telethon.tl.functions.contacts import ImportContactsRequest
+        from telethon.tl.functions.contacts import ImportContactsRequest, GetContactsRequest
         from telethon.tl.types import InputPhoneContact
+
+        # Ambil kontak yang sudah ada untuk mengenali nomor yang sudah terdaftar sebelumnya
+        try:
+            existing_contacts = await client(GetContactsRequest(hash=0))
+            existing_users = getattr(existing_contacts, "users", [])
+        except Exception as e:
+            logger.error(f"Error fetching existing contacts: {e}")
+            existing_users = []
+
+        existing_phones = {}
+        for u in existing_users:
+            if u.phone:
+                norm = "".join(c for c in u.phone if c.isdigit())
+                existing_phones[norm] = u
 
         # Buat pemetaan nomor telepon (digit saja) ke indeks urutannya (1-based)
         phone_to_index = {}
@@ -853,13 +867,31 @@ async def validate_phone_numbers(
                         v_name = f"{prefix_name}({idx})"
                     else:
                         v_name = f"{prefix_name}({user.phone or num})"
-                    valid_users.append({
-                        "user_id": user.id,
-                        "access_hash": user.access_hash,
-                        "username": user.username or "",
-                        "first_name": v_name,
-                        "last_name": user.last_name or "",
-                    })
+                    
+                    if not any(v["user_id"] == user.id for v in valid_users):
+                        valid_users.append({
+                            "user_id": user.id,
+                            "access_hash": user.access_hash,
+                            "username": user.username or "",
+                            "first_name": v_name,
+                            "last_name": user.last_name or "",
+                        })
+
+                # Cek jika ada nomor di batch yang sebenarnya sudah ada di kontak
+                for num in batch:
+                    norm_num = "".join(c for c in num if c.isdigit())
+                    if norm_num in existing_phones:
+                        existing_u = existing_phones[norm_num]
+                        if not any(v["user_id"] == existing_u.id for v in valid_users):
+                            idx = phone_to_index.get(norm_num)
+                            v_name = f"{prefix_name}({idx})" if idx else f"{prefix_name}({num})"
+                            valid_users.append({
+                                "user_id": existing_u.id,
+                                "access_hash": existing_u.access_hash,
+                                "username": existing_u.username or "",
+                                "first_name": v_name,
+                                "last_name": existing_u.last_name or "",
+                            })
 
                 # CATATAN: Kita TIDAK memanggil DeleteContactsRequest di sini
                 # agar kontak-kontak yang valid ini tetap tersimpan di akun Telegram Anda.

@@ -1345,7 +1345,12 @@ async def handle_text_input(event):
             return
 
         base_number = text.replace(" ", "").replace("-", "")
-        # Validasi base number: harus memiliki minimal beberapa digit
+        if base_number.startswith("0"):
+            base_number = "+62" + base_number[1:]
+        elif not base_number.startswith("+"):
+            base_number = "+" + base_number
+
+        # Validasi base number: harus memiliki minimal beberapa digit setelah pembersihan
         digits_only = "".join(c for c in base_number if c.isdigit())
         if len(digits_only) < 7:
             await event.respond(
