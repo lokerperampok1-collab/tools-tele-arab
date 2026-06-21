@@ -1346,7 +1346,16 @@ async def handle_text_input(event):
 
         base_number = text.replace(" ", "").replace("-", "")
         if base_number.startswith("0"):
-            base_number = "+62" + base_number[1:]
+            await event.respond(
+                "❌ **Format Salah!** Nomor tidak boleh diawali dengan `0`.\n"
+                "Harap masukkan nomor dengan **kode negara** (format internasional).\n\n"
+                "_Contoh:_\n"
+                "• `+6281234567890` (Indonesia)\n"
+                "• `+966555018815` (Arab Saudi)\n\n"
+                "Kirim ulang nomor telepon awal Anda:",
+                parse_mode="md",
+            )
+            return
         elif not base_number.startswith("+"):
             base_number = "+" + base_number
 
@@ -1355,7 +1364,7 @@ async def handle_text_input(event):
         if len(digits_only) < 7:
             await event.respond(
                 "❌ Format nomor awal tidak valid! Minimal 7 digit.\n"
-                "Harap kirim ulang nomor telepon awal (contoh: `+6281234567890`):",
+                "Harap kirim ulang nomor telepon awal dengan benar (contoh: `+6281234567890`):",
                 parse_mode="md",
             )
             return
