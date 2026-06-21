@@ -20,6 +20,7 @@ from src import (
     BOT_TOKEN,
     ADMIN_ID,
     MEMBERS_CSV,
+    DATA_DIR,
     SESSIONS_DIR,
     logger,
 )
@@ -29,6 +30,33 @@ from src import userbot
 # ── State Machine ──
 # Menyimpan state percakapan per user
 user_state = {}
+
+
+def list_csv_files() -> list[str]:
+    """Mengembalikan daftar file .csv di dalam directory data."""
+    import glob
+    files = glob.glob(os.path.join(DATA_DIR, "*.csv"))
+    return sorted([os.path.basename(f) for f in files])
+
+
+def sanitize_csv_filename(csv_name: str) -> str:
+    """Membersihkan nama file CSV dari input user agar aman dan konsisten."""
+    import re
+    if not csv_name or csv_name.strip().lower() in ("default", "members"):
+        return "members.csv"
+    
+    name = os.path.basename(csv_name)
+    name = re.sub(r'[^\w\s\.-]', '', name)
+    name = name.strip()
+    
+    if not name.lower().endswith(".csv"):
+        name = f"{name}.csv"
+        
+    if name.lower() == ".csv" or not name:
+        return "members.csv"
+        
+    return name
+
 
 # State constants
 STATE_IDLE = "idle"
@@ -41,6 +69,9 @@ STATE_AWAITING_CONFIRM = "awaiting_confirm"
 STATE_AWAITING_PREFIX_NAME = "awaiting_prefix_name"
 STATE_AWAITING_BASE_NUMBER = "awaiting_base_number"
 STATE_AWAITING_GEN_COUNT = "awaiting_gen_count"
+STATE_AWAITING_SCR_CSV_FILENAME = "awaiting_scr_csv_filename"
+STATE_AWAITING_CNT_CSV_FILENAME = "awaiting_cnt_csv_filename"
+STATE_AWAITING_VAL_CSV_FILENAME = "awaiting_val_csv_filename"
 STATE_BUSY = "busy"  # Sedang memproses (scrape/add)
 
 
@@ -184,7 +215,7 @@ async def run_add_task(phone: str, target: str, members: list[dict], admin_id: i
             del active_tasks[phone]
 
 
-async def run_scrape_task(phone: str, source: str, admin_id: int):
+async def run_scrape_task(phone: str, source: str, admin_id: int, csv_filename: str = "members.csv"):
     """Wrapper untuk menjalankan proses scrape grup di background."""
     async def on_progress(progress_msg):
         try:
@@ -193,7 +224,7 @@ async def run_scrape_task(phone: str, source: str, admin_id: int):
             pass
 
     try:
-        result = await userbot.scrape_members(phone, source, progress_callback=on_progress)
+        result = await userbot.scrape_members(phone, source, progress_callback=on_progress, csv_filename=csv_filename)
         if not result["success"]:
             await bot.send_message(
                 admin_id,
@@ -212,7 +243,7 @@ async def run_scrape_task(phone: str, source: str, admin_id: int):
             f"💾 Tersimpan: **{result['saved']}** member\n"
             f"🤖 Bot dilewati: **{result['skipped_bots']}**\n"
             f"💀 Akun terhapus: **{result['skipped_deleted']}**\n\n"
-            f"Data disimpan ke `members.csv` (Siap digunakan untuk Add Member)",
+            f"Data disimpan ke `{csv_filename}` (Siap digunakan untuk Add Member)",
             parse_mode="md",
         )
     except Exception as e:
@@ -226,7 +257,7 @@ async def run_scrape_task(phone: str, source: str, admin_id: int):
             del active_tasks[phone]
 
 
-async def run_scrape_contacts_task(phone: str, admin_id: int):
+async def run_scrape_contacts_task(phone: str, admin_id: int, csv_filename: str = "members.csv"):
     """Wrapper untuk menjalankan proses scrape kontak di background."""
     async def on_progress(progress_msg):
         try:
@@ -235,7 +266,7 @@ async def run_scrape_contacts_task(phone: str, admin_id: int):
             pass
 
     try:
-        result = await userbot.scrape_contacts(phone, progress_callback=on_progress)
+        result = await userbot.scrape_contacts(phone, progress_callback=on_progress, csv_filename=csv_filename)
         if not result["success"]:
             await bot.send_message(
                 admin_id,
@@ -253,7 +284,7 @@ async def run_scrape_contacts_task(phone: str, admin_id: int):
             f"💾 Tersimpan: **{result['saved']}** kontak\n"
             f"🤖 Bot dilewati: **{result['skipped_bots']}**\n"
             f"💀 Akun terhapus: **{result['skipped_deleted']}**\n\n"
-            f"Data disimpan ke `members.csv` (Siap digunakan untuk Add Member)",
+            f"Data disimpan ke `{csv_filename}` (Siap digunakan untuk Add Member)",
             parse_mode="md",
         )
     except Exception as e:
@@ -267,7 +298,7 @@ async def run_scrape_contacts_task(phone: str, admin_id: int):
             del active_tasks[phone]
 
 
-async def run_validate_task(phone: str, numbers: list[str], admin_id: int, prefix_name: str):
+async def run_validate_task(phone: str, numbers: list[str], admin_id: int, prefix_name: str, csv_filename: str = "members.csv"):
     """Wrapper untuk menjalankan validasi nomor generator di background."""
     async def on_progress(progress_msg):
         try:
@@ -276,7 +307,7 @@ async def run_validate_task(phone: str, numbers: list[str], admin_id: int, prefi
             pass
 
     try:
-        result = await userbot.validate_phone_numbers(phone, numbers, prefix_name=prefix_name, progress_callback=on_progress)
+        result = await userbot.validate_phone_numbers(phone, numbers, prefix_name=prefix_name, progress_callback=on_progress, csv_filename=csv_filename)
         if not result["success"]:
             await bot.send_message(
                 admin_id,
@@ -293,7 +324,7 @@ async def run_validate_task(phone: str, numbers: list[str], admin_id: int, prefi
             f"👤 Terdaftar Telegram: **{result['valid_count']}** akun\n\n"
         )
         if result['valid_count'] > 0:
-            report += "💾 Akun terdaftar telah disimpan ke `members.csv` dan siap langsung di-invite via menu **Add Member**!"
+            report += f"💾 Akun terdaftar telah disimpan ke `{csv_filename}` dan siap langsung di-invite via menu **Add Member**!"
         else:
             report += "⚠️ Tidak ada nomor yang terdaftar di Telegram dari hasil scan ini."
 
@@ -536,7 +567,7 @@ async def cb_scrape_group_selected(event):
 
 @bot.on(events.CallbackQuery(data=lambda d: d.startswith(b"scr_cnt_")))
 async def cb_scrape_contacts_selected(event):
-    """Memulai proses scrape kontak di background."""
+    """Meminta nama file CSV untuk proses scrape kontak."""
     if not is_admin(event.sender_id):
         return
 
@@ -547,16 +578,15 @@ async def cb_scrape_contacts_selected(event):
         await event.respond(f"⚠️ Akun `{phone}` sedang sibuk menjalankan task lain.")
         return
 
+    set_state(event.sender_id, STATE_AWAITING_CNT_CSV_FILENAME, phone=phone)
     await event.respond(
-        f"⏳ **Memulai scraping kontak pada akun `{phone}`...**\n"
-        "Proses berjalan di background. Anda akan menerima notifikasi jika selesai.",
+        f"📋 **Scrape Kontak (Akun: `{phone}`)**\n\n"
+        "Masukkan **Nama File CSV** untuk menyimpan hasil scrape (tanpa `.csv`):\n"
+        "_(Contoh: `kontak_saya` -> disimpan sebagai `kontak_saya.csv`)_\n\n"
+        "Ketik `members` atau langsung kirim teks untuk menggunakan file default (`members.csv`):",
+        buttons=[[Button.inline("❌ Batal", b"menu_cancel")]],
         parse_mode="md",
     )
-
-    task = asyncio.create_task(run_scrape_contacts_task(phone, event.sender_id))
-    active_tasks[phone] = task
-    
-    clear_state(event.sender_id)
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -588,18 +618,16 @@ async def cb_add(event):
 
 @bot.on(events.CallbackQuery(data=b"add_from_csv"))
 async def cb_add_from_csv(event):
-    """Pilihan akun untuk add member menggunakan data CSV."""
+    """Pilihan file CSV untuk add member."""
     if not is_admin(event.sender_id):
         return
-
     await event.answer()
 
-    # Cek CSV
-    members = userbot.load_members()
-    if not members:
+    files = list_csv_files()
+    if not files:
         await event.respond(
-            "⚠️ **Data member kosong!**\n"
-            "Lakukan Scrape terlebih dahulu untuk mengisi data.",
+            "⚠️ **Data CSV kosong!**\n"
+            "Belum ada file CSV hasil scrape atau validasi. Silakan lakukan Scrape Member atau Validasi terlebih dahulu.",
             buttons=[
                 [Button.inline("📋 Scrape Member", b"menu_scrape")],
                 [Button.inline("🔙 Kembali", b"menu_add")],
@@ -607,6 +635,33 @@ async def cb_add_from_csv(event):
             parse_mode="md",
         )
         return
+
+    buttons = []
+    for f in files:
+        buttons.append([Button.inline(f"📄 {f}", f"addcsvfile_{f}".encode('utf-8'))])
+    buttons.append([Button.inline("🔙 Kembali", b"menu_add")])
+
+    await event.respond(
+        "➕ **Add Member (CSV) — Pilih File CSV**\n━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "Silakan pilih file CSV yang berisi daftar member yang ingin Anda undang:",
+        buttons=buttons,
+        parse_mode="md",
+    )
+
+
+@bot.on(events.CallbackQuery(data=lambda d: d.startswith(b"addcsvfile_")))
+async def cb_addcsvfile_selected(event):
+    if not is_admin(event.sender_id):
+        return
+    
+    filename = os.path.basename(event.data.decode('utf-8').replace("addcsvfile_", ""))
+    await event.answer()
+
+    # Load members dari file csv terpilih
+    members = userbot.load_members(csv_filename=filename)
+    
+    # Simpan nama file csv dan list members ke data user state
+    set_state(event.sender_id, "add_csv_acc_select", csv_filename=filename, members=members)
 
     sessions = userbot.list_sessions()
     if not sessions:
@@ -633,10 +688,10 @@ async def cb_add_from_csv(event):
     for phone in active_sessions:
         buttons.append([Button.inline(f"📱 Akun: {phone}", f"add_csv_sel_{phone}".encode('utf-8'))])
         
-    buttons.append([Button.inline("🔙 Kembali", b"menu_add")])
+    buttons.append([Button.inline("🔙 Kembali", b"add_from_csv")])
 
     await event.respond(
-        f"➕ **Add Member (CSV) — Pilih Akun**\n\n"
+        f"➕ **Add Member (CSV: `{filename}`) — Pilih Akun**\n\n"
         f"📊 Data tersedia: **{len(members)} member**\n\n"
         f"Pilih akun yang ingin digunakan untuk mengundang:",
         buttons=buttons,
@@ -705,8 +760,9 @@ async def cb_add_csv_account_selected(event):
         )
         return
 
-    members = userbot.load_members()
-    set_state(event.sender_id, STATE_AWAITING_TARGET_GROUP, phone=phone, members=members, source_type="csv")
+    csv_filename = get_data(event.sender_id, "csv_filename", "members.csv")
+    members = userbot.load_members(csv_filename=csv_filename)
+    set_state(event.sender_id, STATE_AWAITING_TARGET_GROUP, phone=phone, members=members, source_type="csv", csv_filename=csv_filename)
     await event.respond(
         f"➕ **Add Member dari CSV (Akun: `{phone}`)**\n\n"
         f"Kirim username atau link **grup target**:\n\n"
@@ -812,24 +868,51 @@ async def cb_status(event):
 
 
 @bot.on(events.CallbackQuery(data=b"menu_view_csv"))
-async def cb_view_csv(event):
+async def cb_view_csv_list(event):
     if not is_admin(event.sender_id):
         return
     await event.answer()
     
-    import csv
-    if not os.path.exists(MEMBERS_CSV):
+    files = list_csv_files()
+    if not files:
         await event.respond(
-            "📂 **Data CSV (members.csv)**\n━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "⚠️ File `members.csv` belum ada atau kosong. Silakan lakukan Scrape Member atau Generator & Validator terlebih dahulu.",
+            "📂 **Data CSV**\n━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "⚠️ Belum ada file CSV hasil scrape atau validasi. Silakan lakukan Scrape Member atau Validasi terlebih dahulu.",
             buttons=[[Button.inline("🔙 Menu Utama", b"back_menu")]],
             parse_mode="md"
         )
         return
 
+    buttons = []
+    for f in files:
+        buttons.append([Button.inline(f"📄 {f}", f"vcsv_{f}".encode('utf-8'))])
+    buttons.append([Button.inline("🔙 Menu Utama", b"back_menu")])
+
+    await event.respond(
+        "📂 **Pilih File CSV untuk Dilihat:**\n━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "Silakan pilih file CSV di bawah ini untuk melihat pratinjau data atau mengunduhnya:",
+        buttons=buttons,
+        parse_mode="md"
+    )
+
+
+@bot.on(events.CallbackQuery(data=lambda d: d.startswith(b"vcsv_")))
+async def cb_view_csv_file(event):
+    if not is_admin(event.sender_id):
+        return
+    
+    filename = os.path.basename(event.data.decode('utf-8').replace("vcsv_", ""))
+    await event.answer()
+
+    csv_path = os.path.join(DATA_DIR, filename)
+    if not os.path.exists(csv_path):
+        await event.respond(f"⚠️ File `{filename}` tidak ditemukan.")
+        return
+
+    import csv
     try:
         rows = []
-        with open(MEMBERS_CSV, "r", encoding="utf-8") as f:
+        with open(csv_path, "r", encoding="utf-8") as f:
             reader = csv.reader(f)
             header = next(reader, None)
             for row in reader:
@@ -837,31 +920,21 @@ async def cb_view_csv(event):
                     rows.append(row)
     except Exception as e:
         await event.respond(
-            f"❌ Gagal membaca file `members.csv`: {e}",
-            buttons=[[Button.inline("🔙 Menu Utama", b"back_menu")]]
+            f"❌ Gagal membaca file `{filename}`: {e}",
+            buttons=[[Button.inline("🔙 Kembali", b"menu_view_csv")]]
         )
         return
 
     total_members = len(rows)
-    if total_members == 0:
-        await event.respond(
-            "📂 **Data CSV (members.csv)**\n━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "⚠️ File `members.csv` kosong (tidak ada data member).",
-            buttons=[[Button.inline("🔙 Menu Utama", b"back_menu")]],
-            parse_mode="md"
-        )
-        return
-
     # Tampilkan 20 member pertama
     limit = 20
     text_lines = [
-        "📂 **Daftar Member di `members.csv`**\n"
+        f"📂 **File: `{filename}`**\n"
         f"📊 **Total**: {total_members} member\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n"
     ]
     
     for idx, row in enumerate(rows[:limit], 1):
-        # Format: user_id, access_hash, username, first_name, last_name
         user_id = row[0] if len(row) > 0 else "N/A"
         username = row[2] if len(row) > 2 and row[2] else "N/A"
         first_name = row[3] if len(row) > 3 else ""
@@ -877,29 +950,32 @@ async def cb_view_csv(event):
 
     buttons = [
         [
-            Button.inline("📥 Unduh CSV", b"download_members_csv"),
-            Button.inline("🔙 Menu Utama", b"back_menu")
+            Button.inline("📥 Unduh CSV", f"dlcsv_{filename}".encode('utf-8')),
+            Button.inline("🔙 Kembali", b"menu_view_csv")
         ]
     ]
 
     await event.respond(message_text, buttons=buttons, parse_mode="md")
 
 
-@bot.on(events.CallbackQuery(data=b"download_members_csv"))
-async def cb_download_members_csv(event):
+@bot.on(events.CallbackQuery(data=lambda d: d.startswith(b"dlcsv_")))
+async def cb_download_csv_file(event):
     if not is_admin(event.sender_id):
         return
+    
+    filename = os.path.basename(event.data.decode('utf-8').replace("dlcsv_", ""))
     await event.answer("Mengirim file...")
 
-    if not os.path.exists(MEMBERS_CSV):
-        await event.respond("⚠️ File `members.csv` tidak ditemukan.")
+    csv_path = os.path.join(DATA_DIR, filename)
+    if not os.path.exists(csv_path):
+        await event.respond(f"⚠️ File `{filename}` tidak ditemukan.")
         return
 
     try:
         await bot.send_file(
             event.sender_id,
-            MEMBERS_CSV,
-            caption=f"📄 **File `members.csv`**\nTotal: {sum(1 for _ in open(MEMBERS_CSV)) - 1} member.",
+            csv_path,
+            caption=f"📄 **File: `{filename}`**\nTotal: {sum(1 for _ in open(csv_path, encoding='utf-8')) - 1} member.",
             parse_mode="md"
         )
     except Exception as e:
@@ -1097,6 +1173,7 @@ async def cb_confirm_validate(event):
     numbers = get_data(event.sender_id, "numbers")
     state_phone = get_data(event.sender_id, "phone")
     prefix_name = get_data(event.sender_id, "prefix_name", "prefix")
+    csv_filename = get_data(event.sender_id, "csv_filename", "members.csv")
 
     if phone != state_phone or not numbers:
         await event.respond("⚠️ Data tidak cocok atau tidak lengkap. Silakan mulai ulang.")
@@ -1116,7 +1193,7 @@ async def cb_confirm_validate(event):
         parse_mode="md",
     )
 
-    task = asyncio.create_task(run_validate_task(phone, numbers, event.sender_id, prefix_name))
+    task = asyncio.create_task(run_validate_task(phone, numbers, event.sender_id, prefix_name, csv_filename))
     active_tasks[phone] = task
 
     clear_state(event.sender_id)
@@ -1317,13 +1394,60 @@ async def handle_text_input(event):
             clear_state(event.sender_id)
             return
 
+        set_state(event.sender_id, STATE_AWAITING_SCR_CSV_FILENAME, phone=phone, source_group=text)
+        await event.respond(
+            f"📋 **Scrape Member (Akun: `{phone}`)**\n"
+            f"Grup Sumber: `{text}`\n\n"
+            "Masukkan **Nama File CSV** untuk menyimpan hasil scrape (tanpa `.csv`):\n"
+            "_(Contoh: `grup_a` -> disimpan sebagai `grup_a.csv`)_\n\n"
+            "Ketik `members` atau langsung kirim teks untuk menggunakan file default (`members.csv`):",
+            buttons=[[Button.inline("❌ Batal", b"menu_cancel")]],
+            parse_mode="md",
+        )
+        return
+
+    # ── STATE: Menunggu Nama File CSV (Scrape Grup) ──
+    if state == STATE_AWAITING_SCR_CSV_FILENAME:
+        phone = get_data(event.sender_id, "phone")
+        source_group = get_data(event.sender_id, "source_group")
+        if not phone or not source_group:
+            await event.respond("❌ Data sesi tidak lengkap. Silakan mulai ulang.")
+            clear_state(event.sender_id)
+            return
+
+        csv_filename = sanitize_csv_filename(text.strip())
+
         await event.respond(
             f"⏳ **Memulai scrape grup pada akun `{phone}`...**\n"
+            f"Hasil akan disimpan ke file `{csv_filename}`.\n"
             "Proses berjalan di background. Anda akan menerima notifikasi jika selesai.",
             parse_mode="md"
         )
 
-        task = asyncio.create_task(run_scrape_task(phone, text, event.sender_id))
+        task = asyncio.create_task(run_scrape_task(phone, source_group, event.sender_id, csv_filename=csv_filename))
+        active_tasks[phone] = task
+        
+        clear_state(event.sender_id)
+        return
+
+    # ── STATE: Menunggu Nama File CSV (Scrape Kontak) ──
+    if state == STATE_AWAITING_CNT_CSV_FILENAME:
+        phone = get_data(event.sender_id, "phone")
+        if not phone:
+            await event.respond("❌ Nomor telepon tidak ditemukan. Silakan mulai ulang.")
+            clear_state(event.sender_id)
+            return
+
+        csv_filename = sanitize_csv_filename(text.strip())
+
+        await event.respond(
+            f"⏳ **Memulai scraping kontak pada akun `{phone}`...**\n"
+            f"Hasil akan disimpan ke file `{csv_filename}`.\n"
+            "Proses berjalan di background. Anda akan menerima notifikasi jika selesai.",
+            parse_mode="md",
+        )
+
+        task = asyncio.create_task(run_scrape_contacts_task(phone, event.sender_id, csv_filename=csv_filename))
         active_tasks[phone] = task
         
         clear_state(event.sender_id)
@@ -1333,6 +1457,7 @@ async def handle_text_input(event):
     if state == STATE_AWAITING_TARGET_GROUP:
         phone = get_data(event.sender_id, "phone")
         source_type = get_data(event.sender_id, "source_type")
+        csv_filename = get_data(event.sender_id, "csv_filename", "members.csv")
 
         if not phone:
             await event.respond("❌ Sesi tidak lengkap. Silakan mulai ulang.")
@@ -1383,6 +1508,7 @@ async def handle_text_input(event):
             phone=phone,
             target_group=text,
             members=members,
+            csv_filename=csv_filename,
         )
 
         confirm_callback = f"cfm_add_{phone}".encode('utf-8')
@@ -1390,7 +1516,7 @@ async def handle_text_input(event):
         await event.respond(
             f"🎯 **Konfirmasi Add Member**\n"
             f"📱 Akun: `{phone}`\n"
-            f"🔌 Sumber: **{ 'Kontak Langsung' if source_type == 'contacts' else 'Data Scrape CSV' }**\n"
+            f"🔌 Sumber: **{ f'CSV ({csv_filename})' if source_type == 'csv' else 'Kontak Langsung' }**\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
             f"📋 Grup target: **{info['title']}**\n"
             f"👥 Jumlah member: **{len(members)}**\n"
@@ -1495,6 +1621,33 @@ async def handle_text_input(event):
             await event.respond("❌ Jumlah nomor harus di antara 1 s/d 2500! Coba lagi:")
             return
 
+        set_state(event.sender_id, STATE_AWAITING_VAL_CSV_FILENAME, count=count)
+        await event.respond(
+            f"🔢 **Generator & Validator (Akun: `{phone}`)**\n"
+            f"Prefix Kontak: `{prefix_name}`\n"
+            f"Nomor Awal: `{base_number}`\n"
+            f"Jumlah: `{count}` nomor\n\n"
+            "Masukkan **Nama File CSV** untuk menyimpan hasil validasi nomor (tanpa `.csv`):\n"
+            "_(Contoh: `nomor_valid` -> disimpan sebagai `nomor_valid.csv`)_\n\n"
+            "Ketik `members` atau langsung kirim teks untuk menggunakan file default (`members.csv`):",
+            buttons=[[Button.inline("❌ Batal", b"menu_cancel")]],
+            parse_mode="md",
+        )
+        return
+
+    # ── STATE: Menunggu Nama File CSV (Validation) ──
+    if state == STATE_AWAITING_VAL_CSV_FILENAME:
+        phone = get_data(event.sender_id, "phone")
+        prefix_name = get_data(event.sender_id, "prefix_name")
+        base_number = get_data(event.sender_id, "base_number")
+        count = get_data(event.sender_id, "count")
+        if not phone or not prefix_name or not base_number or not count:
+            await event.respond("❌ Data sesi tidak lengkap. Silakan mulai ulang.")
+            clear_state(event.sender_id)
+            return
+
+        csv_filename = sanitize_csv_filename(text.strip())
+
         await event.respond("⏳ Men-generate nomor telepon...")
 
         generated_numbers = userbot.generate_phone_numbers(base_number, count)
@@ -1513,7 +1666,8 @@ async def handle_text_input(event):
             prefix_name=prefix_name,
             base_number=base_number,
             numbers=generated_numbers,
-            source_type="validation"
+            source_type="validation",
+            csv_filename=csv_filename,
         )
 
         confirm_callback = f"cfm_val_{phone}".encode('utf-8')
@@ -1524,9 +1678,10 @@ async def handle_text_input(event):
             f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
             f"• Prefix Kontak: **{prefix_name}**\n"
             f"• Rentang Nomor: **{first_num}** s/d **{last_num}**\n"
-            f"• Total di-generate: **{len(generated_numbers)}** nomor\n\n"
+            f"• Total di-generate: **{len(generated_numbers)}** nomor\n"
+            f"• File Target: **{csv_filename}**\n\n"
             f"Apakah Anda ingin mulai memvalidasi nomor-nomor ini di Telegram?\n"
-            f"Nomor yang valid akan disimpan ke kontak dengan format **{prefix_name}(nomor)** dan diekspor ke `members.csv` agar langsung siap di-invite.",
+            f"Nomor yang valid akan disimpan ke kontak dengan format **{prefix_name}(nomor)** dan diekspor ke `{csv_filename}` agar langsung siap di-invite.",
             buttons=[
                 [
                     Button.inline("✅ Ya, Mulai Validasi!", confirm_callback),

@@ -47,6 +47,7 @@ from src import (
     API_ID,
     API_HASH,
     MEMBERS_CSV,
+    DATA_DIR,
     SESSIONS_DIR,
     get_session_path,
     logger,
@@ -254,6 +255,7 @@ async def scrape_members(
     phone: str,
     source_group_input: str,
     progress_callback: Optional[Callable] = None,
+    csv_filename: str = "members.csv",
 ) -> dict:
     """
     Scrape member dari grup sumber dan simpan ke CSV.
@@ -353,7 +355,8 @@ async def scrape_members(
             }
 
         # Save CSV
-        with open(MEMBERS_CSV, "w", newline="", encoding="utf-8") as f:
+        csv_path = DATA_DIR / csv_filename
+        with open(csv_path, "w", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(
                 f,
                 fieldnames=["user_id", "access_hash", "username", "first_name", "last_name"],
@@ -382,6 +385,7 @@ async def scrape_members(
 async def scrape_contacts(
     phone: str,
     progress_callback: Optional[Callable] = None,
+    csv_filename: str = "members.csv",
 ) -> dict:
     """
     Scrape member dari daftar kontak akun dan simpan ke CSV.
@@ -447,7 +451,8 @@ async def scrape_contacts(
             }
 
         # Save CSV
-        with open(MEMBERS_CSV, "w", newline="", encoding="utf-8") as f:
+        csv_path = DATA_DIR / csv_filename
+        with open(csv_path, "w", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(
                 f,
                 fieldnames=["user_id", "access_hash", "username", "first_name", "last_name"],
@@ -522,12 +527,13 @@ async def get_contacts_list(phone: str) -> dict:
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 
-def load_members() -> list[dict]:
+def load_members(csv_filename: str = "members.csv") -> list[dict]:
     """Membaca data member dari CSV. Mengembalikan list kosong jika file tidak ada."""
-    if not MEMBERS_CSV.exists():
+    csv_path = DATA_DIR / csv_filename
+    if not csv_path.exists():
         return []
     members = []
-    with open(MEMBERS_CSV, "r", encoding="utf-8") as f:
+    with open(csv_path, "r", encoding="utf-8") as f:
         reader = csv.DictReader(f)
         for row in reader:
             members.append(row)
@@ -793,6 +799,7 @@ async def validate_phone_numbers(
     numbers_list: list[str],
     prefix_name: str,
     progress_callback: Optional[Callable] = None,
+    csv_filename: str = "members.csv",
 ) -> dict:
     """
     Validasi daftar nomor telepon di Telegram menggunakan API ImportContacts.
@@ -916,8 +923,9 @@ async def validate_phone_numbers(
                 "error": "Tidak ada nomor yang terdaftar di Telegram dari hasil generator."
             }
 
-        # Simpan ke CSV members.csv agar bisa langsung dipakai di menu Add Member
-        with open(MEMBERS_CSV, "w", newline="", encoding="utf-8") as f:
+        # Simpan ke CSV agar bisa langsung dipakai di menu Add Member
+        csv_path = DATA_DIR / csv_filename
+        with open(csv_path, "w", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(
                 f,
                 fieldnames=["user_id", "access_hash", "username", "first_name", "last_name"],
