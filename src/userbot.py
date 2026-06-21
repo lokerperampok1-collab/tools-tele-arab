@@ -838,7 +838,7 @@ async def validate_phone_numbers(
             phone_to_index[norm] = idx + 1
 
         valid_users = []
-        batch_size = 10
+        batch_size = 1
         total_checked = 0
 
         for i in range(0, len(numbers_list), batch_size):
@@ -900,13 +900,13 @@ async def validate_phone_numbers(
                 logger.error(f"Error pada batch {i}: {batch_err}")
 
             total_checked += len(batch)
-            if total_checked % 20 == 0 or total_checked == len(numbers_list):
+            if total_checked % 10 == 0 or total_checked == len(numbers_list):
                 await _progress(
                     f"📊 Progres Validasi: {total_checked}/{len(numbers_list)} nomor\n"
                     f"✅ Aktif Telegram: **{len(valid_users)}**"
                 )
 
-            await asyncio.sleep(random.uniform(2, 4))
+            await asyncio.sleep(random.uniform(1.5, 3.0))
 
         if not valid_users:
             return {
