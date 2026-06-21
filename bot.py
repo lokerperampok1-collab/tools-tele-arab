@@ -355,7 +355,14 @@ async def cb_login(event):
     sessions = userbot.list_sessions()
     
     if sessions:
-        tasks = [userbot.check_session(p) for p in sessions]
+        tasks = []
+        for p in sessions:
+            if p in active_tasks:
+                async def _fake(phone=p):
+                    return {"authorized": True, "user": None, "phone": phone, "error": "Task sedang berjalan"}
+                tasks.append(_fake())
+            else:
+                tasks.append(userbot.check_session(p))
         results = await asyncio.gather(*tasks)
     else:
         results = []
@@ -485,7 +492,14 @@ async def cb_scrape(event):
         )
         return
 
-    tasks = [userbot.check_session(p) for p in sessions]
+    tasks = []
+    for p in sessions:
+        if p in active_tasks:
+            async def _fake(phone=p):
+                return {"authorized": True, "user": None, "phone": phone, "error": "Task sedang berjalan"}
+            tasks.append(_fake())
+        else:
+            tasks.append(userbot.check_session(p))
     results = await asyncio.gather(*tasks)
     active_sessions = [res["phone"] for res in results if res["authorized"]]
 
@@ -672,7 +686,14 @@ async def cb_addcsvfile_selected(event):
         )
         return
 
-    tasks = [userbot.check_session(p) for p in sessions]
+    tasks = []
+    for p in sessions:
+        if p in active_tasks:
+            async def _fake(phone=p):
+                return {"authorized": True, "user": None, "phone": phone, "error": "Task sedang berjalan"}
+            tasks.append(_fake())
+        else:
+            tasks.append(userbot.check_session(p))
     results = await asyncio.gather(*tasks)
     active_sessions = [res["phone"] for res in results if res["authorized"]]
 
@@ -716,7 +737,14 @@ async def cb_add_from_contacts(event):
         )
         return
 
-    tasks = [userbot.check_session(p) for p in sessions]
+    tasks = []
+    for p in sessions:
+        if p in active_tasks:
+            async def _fake(phone=p):
+                return {"authorized": True, "user": None, "phone": phone, "error": "Task sedang berjalan"}
+            tasks.append(_fake())
+        else:
+            tasks.append(userbot.check_session(p))
     results = await asyncio.gather(*tasks)
     active_sessions = [res["phone"] for res in results if res["authorized"]]
 
@@ -830,7 +858,14 @@ async def cb_status(event):
         )
         return
 
-    tasks = [userbot.check_session(p) for p in sessions]
+    tasks = []
+    for p in sessions:
+        if p in active_tasks:
+            async def _fake(phone=p):
+                return {"authorized": True, "user": None, "phone": phone, "error": "Task sedang berjalan"}
+            tasks.append(_fake())
+        else:
+            tasks.append(userbot.check_session(p))
     results = await asyncio.gather(*tasks)
 
     status_text = "📊 **Status Multi-Akun & Task**\n━━━━━━━━━━━━━━━━━━━━━━\n\n"
@@ -1093,7 +1128,14 @@ async def cb_menu_gen_val(event):
         )
         return
 
-    tasks = [userbot.check_session(p) for p in sessions]
+    tasks = []
+    for p in sessions:
+        if p in active_tasks:
+            async def _fake(phone=p):
+                return {"authorized": True, "user": None, "phone": phone, "error": "Task sedang berjalan"}
+            tasks.append(_fake())
+        else:
+            tasks.append(userbot.check_session(p))
     results = await asyncio.gather(*tasks)
     active_sessions = [res["phone"] for res in results if res["authorized"]]
 

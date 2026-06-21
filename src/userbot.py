@@ -714,6 +714,13 @@ async def add_members(
                 continue
 
             try:
+                # Resolve the entity first to refresh Telethon's internal cache
+                # and announce interaction to Telegram, increasing invitation success rate.
+                try:
+                    await client.get_entity(int(uid))
+                except Exception as ent_err:
+                    logger.debug(f"[{phone}] Failed to get entity for {display} before invite: {ent_err}")
+
                 user_peer = InputPeerUser(user_id=int(uid), access_hash=int(ahash))
                 await client(InviteToChannelRequest(target_group, [user_peer]))
                 added += 1
@@ -887,10 +894,12 @@ async def validate_phone_numbers(
         valid_users = []
         batch_size = 1
         total_checked = 0
+        i = 0
 
-        for i in range(0, len(numbers_list), batch_size):
+        while i < len(numbers_list):
             batch = numbers_list[i:i+batch_size]
             contacts = []
+            cid_to_info = {}
 
             for idx_in_batch, num in enumerate(batch):
                 cid = random.randint(1000000, 9999999)
@@ -898,22 +907,35 @@ async def validate_phone_numbers(
                 # Simpan kontak dengan nama prefix_name(indeks)
                 first_name = f"{prefix_name}({global_idx})"
                 contacts.append(InputPhoneContact(client_id=cid, phone=num, first_name=first_name, last_name=""))
+                cid_to_info[cid] = {"phone": num, "idx": global_idx}
 
             try:
                 import_res = await client(ImportContactsRequest(contacts))
                 imported_users = getattr(import_res, "users", [])
+                imported_list = getattr(import_res, "imported", [])
+
+                # Map user_id to our generated info via client_id
+                user_id_to_info = {}
+                for imp in imported_list:
+                    info = cid_to_info.get(imp.client_id)
+                    if info:
+                        user_id_to_info[imp.user_id] = info
 
                 for user in imported_users:
                     if user.bot or user.deleted:
                         continue
 
-                    # Ambil nama yang kita simpan (atau fallback)
-                    norm_phone = "".join(c for c in (user.phone or "") if c.isdigit())
-                    idx = phone_to_index.get(norm_phone)
-                    if idx is not None:
-                        v_name = f"{prefix_name}({idx})"
+                    # Try to map using client_id first, then fallback
+                    info = user_id_to_info.get(user.id)
+                    if info:
+                        v_name = f"{prefix_name}({info['idx']})"
                     else:
-                        v_name = f"{prefix_name}({user.phone or num})"
+                        norm_phone = "".join(c for c in (user.phone or "") if c.isdigit())
+                        idx = phone_to_index.get(norm_phone)
+                        if idx is not None:
+                            v_name = f"{prefix_name}({idx})"
+                        else:
+                            v_name = f"{prefix_name}({user.phone or batch[0]})"
                     
                     if not any(v["user_id"] == user.id for v in valid_users):
                         valid_users.append({
@@ -943,11 +965,36 @@ async def validate_phone_numbers(
                 # CATATAN: Kita TIDAK memanggil DeleteContactsRequest di sini
                 # agar kontak-kontak yang valid ini tetap tersimpan di akun Telegram Anda.
 
-            except Exception as batch_err:
-                logger.error(f"Error pada batch {i}: {batch_err}")
+                # Move to next batch
+                total_checked += len(batch)
+                i += batch_size
 
-            total_checked += len(batch)
-            if total_checked % 10 == 0 or total_checked == len(numbers_list):
+            except FloodWaitError as e:
+                wait_sec = e.seconds + FLOOD_WAIT_BUFFER
+                await _progress(
+                    f"⚠️ **FloodWait Validator!** Telegram minta tunggu {e.seconds} detik.\n"
+                    f"⏳ Auto-pause {wait_sec} detik... Jangan panik."
+                )
+                logger.warning(f"[{phone}] FloodWait in Validator: {e.seconds}s, pausing {wait_sec}s")
+                await asyncio.sleep(wait_sec)
+                # Do NOT increment i, so it retries the same batch.
+
+            except PeerFloodError:
+                await _progress(
+                    "🛑 **PeerFloodError!** Akun terindikasi spam berat saat import kontak.\n"
+                    "Proses validasi dihentikan."
+                )
+                logger.error(f"[{phone}] PeerFloodError in Validator — stopping")
+                break
+
+            except Exception as batch_err:
+                await _progress(f"⚠️ Error pada batch check: {type(batch_err).__name__}: {batch_err}")
+                logger.error(f"Error pada batch {i}: {batch_err}")
+                # Move to next batch to prevent infinite loop on other unexpected errors
+                total_checked += len(batch)
+                i += batch_size
+
+            if total_checked % 10 == 0 or i >= len(numbers_list):
                 await _progress(
                     f"📊 Progres Validasi: {total_checked}/{len(numbers_list)} nomor\n"
                     f"✅ Aktif Telegram: **{len(valid_users)}**"
