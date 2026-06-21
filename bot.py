@@ -94,6 +94,7 @@ MAIN_BUTTONS = [
     [Button.inline("📋 Scrape Member", b"menu_scrape")],
     [Button.inline("➕ Add Member", b"menu_add")],
     [Button.inline("🔢 Generator & Validator", b"menu_gen_val")],
+    [Button.inline("📄 Lihat Data CSV", b"menu_view_csv")],
     [Button.inline("📊 Status", b"menu_status")],
     [Button.inline("❌ Batal / Reset", b"menu_cancel")],
 ]
@@ -808,6 +809,101 @@ async def cb_status(event):
         buttons=[[Button.inline("🔙 Menu Utama", b"back_menu")]],
         parse_mode="md"
     )
+
+
+@bot.on(events.CallbackQuery(data=b"menu_view_csv"))
+async def cb_view_csv(event):
+    if not is_admin(event.sender_id):
+        return
+    await event.answer()
+    
+    import csv
+    if not os.path.exists(MEMBERS_CSV):
+        await event.respond(
+            "📂 **Data CSV (members.csv)**\n━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "⚠️ File `members.csv` belum ada atau kosong. Silakan lakukan Scrape Member atau Generator & Validator terlebih dahulu.",
+            buttons=[[Button.inline("🔙 Menu Utama", b"back_menu")]],
+            parse_mode="md"
+        )
+        return
+
+    try:
+        rows = []
+        with open(MEMBERS_CSV, "r", encoding="utf-8") as f:
+            reader = csv.reader(f)
+            header = next(reader, None)
+            for row in reader:
+                if row:
+                    rows.append(row)
+    except Exception as e:
+        await event.respond(
+            f"❌ Gagal membaca file `members.csv`: {e}",
+            buttons=[[Button.inline("🔙 Menu Utama", b"back_menu")]]
+        )
+        return
+
+    total_members = len(rows)
+    if total_members == 0:
+        await event.respond(
+            "📂 **Data CSV (members.csv)**\n━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "⚠️ File `members.csv` kosong (tidak ada data member).",
+            buttons=[[Button.inline("🔙 Menu Utama", b"back_menu")]],
+            parse_mode="md"
+        )
+        return
+
+    # Tampilkan 20 member pertama
+    limit = 20
+    text_lines = [
+        "📂 **Daftar Member di `members.csv`**\n"
+        f"📊 **Total**: {total_members} member\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n"
+    ]
+    
+    for idx, row in enumerate(rows[:limit], 1):
+        # Format: user_id, access_hash, username, first_name, last_name
+        user_id = row[0] if len(row) > 0 else "N/A"
+        username = row[2] if len(row) > 2 and row[2] else "N/A"
+        first_name = row[3] if len(row) > 3 else ""
+        last_name = row[4] if len(row) > 4 else ""
+        full_name = f"{first_name} {last_name}".strip() or "N/A"
+        
+        text_lines.append(f"{idx}. `{user_id}` | @{username} | **{full_name}**")
+
+    if total_members > limit:
+        text_lines.append(f"\n_... dan {total_members - limit} member lainnya._")
+
+    message_text = "\n".join(text_lines)
+
+    buttons = [
+        [
+            Button.inline("📥 Unduh CSV", b"download_members_csv"),
+            Button.inline("🔙 Menu Utama", b"back_menu")
+        ]
+    ]
+
+    await event.respond(message_text, buttons=buttons, parse_mode="md")
+
+
+@bot.on(events.CallbackQuery(data=b"download_members_csv"))
+async def cb_download_members_csv(event):
+    if not is_admin(event.sender_id):
+        return
+    await event.answer("Mengirim file...")
+
+    if not os.path.exists(MEMBERS_CSV):
+        await event.respond("⚠️ File `members.csv` tidak ditemukan.")
+        return
+
+    try:
+        await bot.send_file(
+            event.sender_id,
+            MEMBERS_CSV,
+            caption=f"📄 **File `members.csv`**\nTotal: {sum(1 for _ in open(MEMBERS_CSV)) - 1} member.",
+            parse_mode="md"
+        )
+    except Exception as e:
+        await event.respond(f"❌ Gagal mengirim file: {e}")
 
 
 @bot.on(events.CallbackQuery(data=b"menu_cancel"))
