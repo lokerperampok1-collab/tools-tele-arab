@@ -360,7 +360,12 @@ async def run_create_group_task(phone: str, title: str, group_type: str, about: 
             )
             return
 
-        g_type_name = "Grup Biasa" if group_type == "basic" else "Grup Super"
+        if group_type == "basic":
+            g_type_name = "Grup Biasa (Kosong)"
+        elif group_type == "basiccontacts":
+            g_type_name = "Grup Biasa + Kontak"
+        else:
+            g_type_name = "Grup Super"
         report = (
             f"🏗️ **GRUP BERHASIL DIBUAT!**\n"
             f"📱 Akun: `{phone}`\n"
@@ -1237,10 +1242,13 @@ async def cb_create_group_account_selected(event):
         "• **Grup Super**: Grup canggih, kapasitas maks 200.000 member, mendukung link publik & deskripsi.",
         buttons=[
             [
-                Button.inline("👥 Grup Biasa", f"crg_type_basic_{phone}".encode('utf-8')),
-                Button.inline("⚡ Grup Super", f"crg_type_supergroup_{phone}".encode('utf-8'))
+                Button.inline("👥 Grup Biasa (Kosong)", f"crg_type_basic_{phone}".encode('utf-8')),
+                Button.inline("📇 Grup Biasa + Kontak", f"crg_type_basiccontacts_{phone}".encode('utf-8'))
             ],
-            [Button.inline("❌ Batal", b"menu_cancel")]
+            [
+                Button.inline("⚡ Grup Super", f"crg_type_supergroup_{phone}".encode('utf-8')),
+                Button.inline("❌ Batal", b"menu_cancel")
+            ]
         ],
         parse_mode="md",
     )
@@ -1262,7 +1270,13 @@ async def cb_create_group_type_selected(event):
 
     set_state(event.sender_id, STATE_AWAITING_GROUP_TITLE, phone=phone, group_type=g_type)
     
-    g_type_name = "Grup Biasa" if g_type == "basic" else "Grup Super"
+    if g_type == "basic":
+        g_type_name = "Grup Biasa (Kosong)"
+    elif g_type == "basiccontacts":
+        g_type_name = "Grup Biasa + Kontak"
+    else:
+        g_type_name = "Grup Super"
+        
     await event.respond(
         f"🏗️ **Buat Grup Otomatis (Akun: `{phone}`)**\n"
         f"Tipe Terpilih: **{g_type_name}**\n\n"
@@ -1955,7 +1969,7 @@ async def handle_text_input(event):
             await event.respond("❌ Nama grup tidak boleh kosong! Silakan masukkan nama grup:")
             return
 
-        if group_type == "basic":
+        if group_type in ("basic", "basiccontacts"):
             set_state(
                 event.sender_id,
                 STATE_AWAITING_CONFIRM,
@@ -1965,14 +1979,16 @@ async def handle_text_input(event):
                 group_about=""
             )
             confirm_callback = f"cfm_crg_{phone}".encode('utf-8')
+            g_type_name = "Grup Biasa (Kosong)" if group_type == "basic" else "Grup Biasa + Kontak"
+            note_text = "Sesi akun Anda dan akun admin ini akan otomatis bergabung ke grup baru." if group_type == "basic" else "Sesi akun Anda, akun admin ini, beserta semua kontak pada akun userbot akan otomatis dimasukkan ke grup baru."
             await event.respond(
                 f"🏗️ **Konfirmasi Buat Grup**\n"
                 f"📱 Akun: `{phone}`\n"
-                f"🔌 Tipe: **Grup Biasa**\n"
+                f"🔌 Tipe: **{g_type_name}**\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
                 f"• Nama Grup: **{title}**\n\n"
                 f"Apakah Anda ingin membuat grup ini sekarang?\n"
-                f"_(Catatan: Sesi akun Anda dan akun admin ini akan otomatis bergabung ke grup baru.)_",
+                f"_(Catatan: {note_text})_",
                 buttons=[
                     [
                         Button.inline("✅ Ya, Buat Grup!", confirm_callback),

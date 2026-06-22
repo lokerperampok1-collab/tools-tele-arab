@@ -1058,42 +1058,42 @@ async def create_group(phone: str, title: str, group_type: str, admin_id: int, b
             return {"success": False, "error": "Session expired! Login ulang."}
 
         # 1. Buat grup berdasarkan tipe
-        if group_type == "basic":
-            # Grup biasa memerlukan minimal 1 anggota selain pembuat saat awal dibuat.
-            # Kita coba admin_id (admin Telegram bot) sebagai anggota pertama.
-            users_to_add = []
+        if group_type in ("basic", "basiccontacts"):
+            # Untuk grup biasa, kita HANYA menambahkan 1 user awal (admin, bot, atau kontak pertama)
+            # guna memastikan pembuatan grup 100% sukses tanpa terhambat privacy settings kontak-kontak lainnya.
+            initial_users = []
             if admin_id:
                 try:
                     admin_entity = await client.get_entity(int(admin_id))
-                    users_to_add.append(admin_entity)
-                    logger.info(f"Menggunakan admin_id {admin_id} untuk pembuatan grup biasa.")
+                    initial_users.append(admin_entity)
+                    logger.info(f"Menggunakan admin_id {admin_id} sebagai anggota awal grup biasa.")
                 except Exception as ent_err:
                     logger.warning(f"Gagal me-resolve entity admin_id {admin_id}: {ent_err}")
             
             # Fallback 1: Coba gunakan bot_username
-            if not users_to_add and bot_username:
+            if not initial_users and bot_username:
                 try:
                     bot_entity = await client.get_entity(bot_username)
-                    users_to_add.append(bot_entity)
-                    logger.info(f"Menggunakan bot_username {bot_username} sebagai fallback.")
+                    initial_users.append(bot_entity)
+                    logger.info(f"Menggunakan bot_username {bot_username} sebagai anggota awal fallback.")
                 except Exception as bot_err:
                     logger.warning(f"Gagal me-resolve bot_username {bot_username}: {bot_err}")
 
             # Fallback 2: Ambil kontak pertama yang aktif dari akun userbot
-            if not users_to_add:
+            if not initial_users:
                 try:
                     from telethon.tl.functions.contacts import GetContactsRequest
                     contacts_res = await client(GetContactsRequest(hash=0))
                     existing_users = getattr(contacts_res, "users", [])
                     for u in existing_users:
                         if not u.bot and not u.deleted:
-                            users_to_add.append(u)
-                            logger.info(f"Menggunakan kontak {u.id} ({u.first_name}) sebagai fallback pembuatan grup biasa.")
+                            initial_users.append(u)
+                            logger.info(f"Menggunakan kontak {u.id} ({u.first_name}) sebagai anggota awal fallback.")
                             break
                 except Exception as contacts_err:
                     logger.warning(f"Gagal mengambil kontak fallback: {contacts_err}")
 
-            if not users_to_add:
+            if not initial_users:
                 return {
                     "success": False, 
                     "error": "Telegram mewajibkan minimal 1 anggota lain untuk membuat grup biasa, "
@@ -1101,7 +1101,7 @@ async def create_group(phone: str, title: str, group_type: str, admin_id: int, b
                 }
 
             result = await client(CreateChatRequest(
-                users=users_to_add,
+                users=initial_users,
                 title=title
             ))
         else:
@@ -1116,6 +1116,31 @@ async def create_group(phone: str, title: str, group_type: str, admin_id: int, b
             return {"success": False, "error": "Gagal membuat grup (response kosong)."}
 
         new_group = result.chats[0]
+
+        # 1.5 Jika tipenya "basiccontacts", tambahkan kontak lainnya secara satu per satu (tangani error per user)
+        if group_type == "basiccontacts":
+            try:
+                from telethon.tl.functions.contacts import GetContactsRequest
+                contacts_res = await client(GetContactsRequest(hash=0))
+                existing_users = getattr(contacts_res, "users", [])
+                
+                added_count = 0
+                failed_count = 0
+                for u in existing_users:
+                    if not u.bot and not u.deleted:
+                        # Jangan tambahkan user yang sudah ada di initial_users
+                        if any(x.id == u.id for x in initial_users):
+                            continue
+                        try:
+                            await client.add_participants(new_group, u)
+                            added_count += 1
+                            await asyncio.sleep(random.uniform(0.5, 1.2)) # Jeda aman anti-spam
+                        except Exception as u_err:
+                            logger.warning(f"Gagal menambahkan user {u.id} ({u.first_name}) ke grup baru: {u_err}")
+                            failed_count += 1
+                logger.info(f"Proses tambah kontak selesai. Sukses: {added_count}, Gagal/Skip: {failed_count}")
+            except Exception as contacts_err:
+                logger.warning(f"Gagal mengambil kontak untuk penambahan pasca-pembuatan: {contacts_err}")
         
         # 2. Dapatkan link undangan (invite link)
         try:
