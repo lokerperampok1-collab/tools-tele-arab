@@ -75,6 +75,7 @@ STATE_AWAITING_VAL_CSV_FILENAME = "awaiting_val_csv_filename"
 STATE_AWAITING_GROUP_TYPE = "awaiting_group_type"
 STATE_AWAITING_GROUP_TITLE = "awaiting_group_title"
 STATE_AWAITING_GROUP_ABOUT = "awaiting_group_about"
+STATE_AWAITING_SYNC_FILE = "awaiting_sync_file"
 STATE_BUSY = "busy"  # Sedang memproses (scrape/add)
 
 
@@ -128,6 +129,7 @@ MAIN_BUTTONS = [
     [Button.inline("📋 Scrape Member", b"menu_scrape")],
     [Button.inline("➕ Add Member", b"menu_add")],
     [Button.inline("🏗️ Buat Grup Otomatis", b"menu_create_group")],
+    [Button.inline("🔄 Sinkron Kontak", b"menu_sync_contacts")],
     [Button.inline("🔢 Generator & Validator", b"menu_gen_val")],
     [Button.inline("📄 Lihat Data CSV", b"menu_view_csv")],
     [Button.inline("📊 Status", b"menu_status")],
@@ -388,6 +390,49 @@ async def run_create_group_task(phone: str, title: str, group_type: str, about: 
         logger.error(f"Error running create group task for {phone}: {e}")
         try:
             await bot.send_message(admin_id, f"❌ **Error tak terduga** pada akun `{phone}` saat membuat grup: {e}")
+        except Exception:
+            pass
+    finally:
+        if phone in active_tasks:
+            del active_tasks[phone]
+
+
+async def run_sync_contacts_task(phone: str, numbers: list[str], admin_id: int, prefix_name: str):
+    """Wrapper untuk menjalankan sinkronisasi kontak di background."""
+    async def on_progress(progress_msg):
+        try:
+            await bot.send_message(admin_id, f"📱 **Akun**: `{phone}`\n{progress_msg}", parse_mode="md")
+        except Exception:
+            pass
+
+    try:
+        result = await userbot.import_contacts_list(
+            phone=phone,
+            numbers_list=numbers,
+            prefix_name=prefix_name,
+            progress_callback=on_progress
+        )
+        if not result["success"]:
+            await bot.send_message(
+                admin_id,
+                f"❌ **Sinkron Kontak Gagal!** (Akun: `{phone}`)\n\n{result['error']}",
+                parse_mode="md",
+            )
+            return
+
+        await bot.send_message(
+            admin_id,
+            f"✅ **Proses Sinkronisasi Kontak Selesai!**\n"
+            f"📱 Akun: `{phone}`\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"📊 Total nomor di-proses: **{result['total_processed']}**\n"
+            f"👤 Kontak Berhasil Ter-sinkron: **{result['imported_count']}** akun\n",
+            parse_mode="md",
+        )
+    except Exception as e:
+        logger.error(f"Error running sync contacts task for {phone}: {e}")
+        try:
+            await bot.send_message(admin_id, f"❌ **Error tak terduga** pada akun `{phone}` saat sinkron kontak: {e}")
         except Exception:
             pass
     finally:
@@ -1329,6 +1374,87 @@ async def cb_confirm_create_group(event):
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  CALLBACK: SINKRONISASI KONTAK
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+@bot.on(events.CallbackQuery(data=b"menu_sync_contacts"))
+async def cb_sync_contacts(event):
+    """Pilihan akun untuk sinkronisasi kontak."""
+    if not is_admin(event.sender_id):
+        return
+
+    await event.answer()
+
+    sessions = userbot.list_sessions()
+    if not sessions:
+        await event.respond(
+            "⚠️ **Belum ada akun!**\nSilakan login akun terlebih dahulu.",
+            buttons=[[Button.inline("🔐 Login Akun", b"menu_login")]],
+            parse_mode="md",
+        )
+        return
+
+    tasks = []
+    for p in sessions:
+        if p in active_tasks:
+            async def _fake(phone=p):
+                return {"authorized": True, "user": None, "phone": phone, "error": "Task sedang berjalan"}
+            tasks.append(_fake())
+        else:
+            tasks.append(userbot.check_session(p))
+    results = await asyncio.gather(*tasks)
+    active_sessions = [res["phone"] for res in results if res["authorized"]]
+
+    if not active_sessions:
+        await event.respond(
+            "⚠️ **Tidak ada akun aktif!**\nSemua session terputus. Silakan login kembali.",
+            buttons=[[Button.inline("🔐 Login Akun", b"menu_login")]],
+            parse_mode="md",
+        )
+        return
+
+    buttons = []
+    for phone in active_sessions:
+        buttons.append([Button.inline(f"📱 Akun: {phone}", f"syn_sel_{phone}".encode('utf-8'))])
+        
+    buttons.append([Button.inline("🔙 Menu Utama", b"back_menu")])
+
+    await event.respond(
+        "🔄 **Sinkron Kontak — Pilih Akun**\n\n"
+        "Pilih akun yang ingin Anda gunakan untuk menyinkronkan kontak:",
+        buttons=buttons,
+        parse_mode="md",
+    )
+
+
+@bot.on(events.CallbackQuery(data=lambda d: d.startswith(b"syn_sel_")))
+async def cb_sync_contacts_account_selected(event):
+    """Menunggu pengiriman file kontak setelah akun dipilih."""
+    if not is_admin(event.sender_id):
+        return
+
+    phone = event.data.decode('utf-8').replace("syn_sel_", "")
+    await event.answer()
+
+    if phone in active_tasks:
+        await event.respond(
+            f"⚠️ Akun `{phone}` sedang sibuk menjalankan task lain.\n"
+            "Silakan tunggu hingga selesai atau pilih akun lain.",
+            buttons=[[Button.inline("🔙 Kembali", b"menu_sync_contacts")]],
+            parse_mode="md"
+        )
+        return
+
+    set_state(event.sender_id, STATE_AWAITING_SYNC_FILE, phone=phone)
+    await event.respond(
+        f"🔄 **Sinkron Kontak (Akun: `{phone}`)**\n\n"
+        "Silakan kirimkan file kontak Anda (format `.vcf`, `.vsc`, `.csv`, atau `.txt`) yang berisi daftar nomor telepon yang ingin diimpor.",
+        buttons=[[Button.inline("❌ Batal", b"back_menu")]],
+        parse_mode="md"
+    )
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #  CALLBACK: GENERATOR & VALIDATOR
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -2061,6 +2187,147 @@ async def handle_text_input(event):
         await event.respond(
             "💡 Ketik /start atau /menu untuk membuka menu.",
         )
+
+
+@bot.on(events.NewMessage(func=lambda e: e.is_private))
+async def handle_sync_file_input(event):
+    """
+    Handler khusus untuk memproses unggahan file kontak saat user berada
+    dalam state STATE_AWAITING_SYNC_FILE.
+    """
+    if not is_admin(event.sender_id):
+        return
+
+    state = get_state(event.sender_id)
+    if state != STATE_AWAITING_SYNC_FILE:
+        return
+
+    # Jika user mengirim command atau teks pembatalan
+    if event.message.text and event.message.text.startswith("/"):
+        return
+
+    # Check if message contains a document or file
+    if not (event.message.document or event.message.file):
+        await event.respond("⚠️ Mohon kirimkan file kontak (.vcf, .vsc, .csv, atau .txt).")
+        return
+
+    phone = get_data(event.sender_id, "phone")
+    if not phone:
+        await event.respond("⚠️ Akun tidak teridentifikasi. Silakan mulai ulang.")
+        clear_state(event.sender_id)
+        return
+
+    await event.respond("⏳ Mengunduh file kontak...")
+    
+    import re
+    import csv
+    import time
+    
+    os.makedirs(DATA_DIR, exist_ok=True)
+    
+    file_name = event.message.file.name or f"sync_{int(time.time())}.txt"
+    file_path = os.path.join(DATA_DIR, file_name)
+    
+    try:
+        await event.message.download_media(file_path)
+    except Exception as e:
+        await event.respond(f"❌ Gagal mengunduh file: {e}")
+        return
+
+    await event.respond(f"🔍 File **{file_name}** berhasil diunduh. Membaca nomor telepon...")
+
+    numbers = []
+    ext = os.path.splitext(file_name)[1].lower()
+    
+    try:
+        if ext == '.vcf':
+            tel_pattern = re.compile(r'(?:item\d+\.)?TEL(?:;[^:]+)?:(.*)', re.IGNORECASE)
+            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                for line in f:
+                    match = tel_pattern.search(line)
+                    if match:
+                        num = match.group(1).strip()
+                        clean = "".join(c for c in num if c.isdigit() or c == '+')
+                        if len(clean) >= 9:
+                            numbers.append(clean)
+        elif ext in ('.csv', '.vsc'):
+            try:
+                with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                    reader = csv.reader(f)
+                    for row in reader:
+                        for cell in row:
+                            clean = "".join(c for c in cell if c.isdigit() or c == '+')
+                            if len(clean) >= 9 and clean.replace('+', '').isdigit():
+                                numbers.append(clean)
+            except Exception:
+                pass
+        
+        # Fallback / General line scanner if no numbers extracted yet or txt file
+        if not numbers:
+            num_pattern = re.compile(r'\+?[0-9\-\s\(\)]{9,}')
+            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                for line in f:
+                    if any(tag in line.upper() for tag in ["BEGIN:", "END:", "VERSION:", "PRODID:", "N:", "FN:"]):
+                        continue
+                    if re.search(r'\d{4}-\d{2}-\d{2}', line):
+                        continue
+                    matches = num_pattern.findall(line)
+                    for m in matches:
+                        clean = "".join(c for c in m if c.isdigit() or c == '+')
+                        digits_only = clean.replace('+', '')
+                        if len(digits_only) >= 9 and not digits_only.startswith('0000'):
+                            numbers.append(clean)
+    except Exception as parse_err:
+        await event.respond(f"❌ Gagal memproses file: {parse_err}")
+        if os.path.exists(file_path):
+            os.remove(file_path)
+        return
+
+    if os.path.exists(file_path):
+        os.remove(file_path)
+
+    # Standardize numbers
+    unique_numbers = []
+    seen = set()
+    for num in numbers:
+        clean_num = "".join(c for c in num if c.isdigit() or c == '+')
+        if not clean_num:
+            continue
+        
+        if clean_num.startswith('+'):
+            std_num = clean_num
+        elif clean_num.startswith('08'):
+            std_num = '+62' + clean_num[1:]
+        elif clean_num.startswith('628'):
+            std_num = '+' + clean_num
+        else:
+            std_num = '+' + clean_num
+            
+        if std_num not in seen:
+            seen.add(std_num)
+            unique_numbers.append(std_num)
+
+    if not unique_numbers:
+        await event.respond("❌ **Tidak ditemukan nomor telepon valid** dalam file tersebut.")
+        clear_state(event.sender_id)
+        return
+
+    if phone in active_tasks:
+        await event.respond(f"⚠️ Akun `{phone}` sedang menjalankan task lain. Silakan tunggu.")
+        clear_state(event.sender_id)
+        return
+
+    await event.respond(
+        f"✅ **Berhasil membaca {len(unique_numbers)} nomor telepon.**\n"
+        f"⏳ **Memulai sinkronisasi kontak pada akun `{phone}`...**\n"
+        f"Proses berjalan di background. Anda akan menerima notifikasi jika selesai.",
+        parse_mode="md"
+    )
+
+    task = asyncio.create_task(run_sync_contacts_task(phone, unique_numbers, event.sender_id, "Sync"))
+    active_tasks[phone] = task
+
+    clear_state(event.sender_id)
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

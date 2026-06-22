@@ -1162,3 +1162,113 @@ async def create_group(phone: str, title: str, group_type: str, admin_id: int, b
     finally:
         await client.disconnect()
 
+
+async def import_contacts_list(
+    phone: str,
+    numbers_list: list[str],
+    prefix_name: str = "Sync",
+    progress_callback = None
+) -> dict:
+    """
+    Import list nomor telepon secara massal ke dalam kontak akun Telegram.
+    """
+    if not phone:
+        return {"success": False, "error": "Nomor telepon tidak ditentukan."}
+
+    client = get_client(phone)
+
+    async def _progress(msg):
+        if progress_callback:
+            await progress_callback(msg)
+
+    try:
+        await client.connect()
+        if not await client.is_user_authorized():
+            return {"success": False, "error": "Session expired! Login ulang."}
+
+        await _progress(f"🔍 Mulai menyinkronkan {len(numbers_list)} nomor ke kontak Telegram...")
+
+        from telethon.tl.functions.contacts import ImportContactsRequest, GetContactsRequest
+        from telethon.tl.types import InputPhoneContact
+
+        # Ambil kontak yang ada
+        try:
+            existing_contacts = await client(GetContactsRequest(hash=0))
+            existing_users = getattr(existing_contacts, "users", [])
+        except Exception as e:
+            logger.error(f"Error fetching existing contacts: {e}")
+            existing_users = []
+
+        existing_phones = {}
+        for u in existing_users:
+            if u.phone:
+                norm = "".join(c for c in u.phone if c.isdigit())
+                existing_phones[norm] = u
+
+        valid_users = []
+        batch_size = 5
+        total_checked = 0
+        i = 0
+
+        while i < len(numbers_list):
+            batch = numbers_list[i:i+batch_size]
+            contacts = []
+
+            for idx_in_batch, num in enumerate(batch):
+                cid = random.randint(1000000, 9999999)
+                global_idx = i + idx_in_batch + 1
+                first_name = f"{prefix_name}({global_idx})"
+                contacts.append(InputPhoneContact(client_id=cid, phone=num, first_name=first_name, last_name=""))
+
+            try:
+                import_res = await client(ImportContactsRequest(contacts))
+                imported_users = getattr(import_res, "users", [])
+
+                for user in imported_users:
+                    if user.bot or user.deleted:
+                        continue
+                    if not any(v.id == user.id for v in valid_users):
+                        valid_users.append(user)
+
+                i += len(batch)
+                total_checked += len(batch)
+
+            except FloodWaitError as e:
+                wait_sec = e.seconds + FLOOD_WAIT_BUFFER
+                await _progress(
+                    f"⚠️ **FloodWait!** Telegram minta jeda {e.seconds} detik.\n"
+                    f"⏳ Menunggu {wait_sec} detik..."
+                )
+                await asyncio.sleep(wait_sec)
+                # Ulangi batch yang sama
+
+            except PeerFloodError:
+                await _progress("🛑 **PeerFloodError!** Akun terkena limit spam impor kontak. Proses dihentikan.")
+                break
+
+            except Exception as batch_err:
+                await _progress(f"⚠️ Warning pada batch impor: {batch_err}")
+                i += len(batch)
+                total_checked += len(batch)
+
+            if total_checked % 10 == 0 or i >= len(numbers_list):
+                await _progress(
+                    f"📊 Progress: {total_checked}/{len(numbers_list)} nomor di-proses\n"
+                    f"✅ Kontak Berhasil Ter-sinkron: **{len(valid_users)}**"
+                )
+
+            await asyncio.sleep(random.uniform(1.5, 3.0))
+
+        return {
+            "success": True,
+            "total_processed": total_checked,
+            "imported_count": len(valid_users),
+            "error": None
+        }
+
+    except Exception as e:
+        return {"success": False, "error": f"Error: {type(e).__name__}: {e}"}
+    finally:
+        await client.disconnect()
+
+
