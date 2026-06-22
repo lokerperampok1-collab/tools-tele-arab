@@ -37,7 +37,9 @@ from telethon.errors import (
 from telethon.tl.functions.channels import (
     GetParticipantsRequest,
     InviteToChannelRequest,
+    CreateChannelRequest,
 )
+from telethon.tl.functions.messages import ExportChatInviteRequest
 from telethon.tl.types import (
     ChannelParticipantsSearch,
     InputPeerUser,
@@ -1040,3 +1042,50 @@ async def validate_phone_numbers(
         return {"success": False, "error": f"Error: {type(e).__name__}: {e}"}
     finally:
         await client.disconnect()
+
+
+async def create_megagroup(phone: str, title: str, about: str = "") -> dict:
+    """
+    Membuat supergroup (megagroup) baru dan mengembalikan info grup serta link undangannya.
+    """
+    if not phone:
+        return {"success": False, "error": "Nomor telepon tidak ditentukan."}
+
+    client = get_client(phone)
+    try:
+        await client.connect()
+        if not await client.is_user_authorized():
+            return {"success": False, "error": "Session expired! Login ulang."}
+
+        # 1. Buat megagroup (supergroup)
+        result = await client(CreateChannelRequest(
+            title=title,
+            about=about,
+            megagroup=True
+        ))
+        
+        if not result or not result.chats:
+            return {"success": False, "error": "Gagal membuat grup (response kosong)."}
+
+        new_group = result.chats[0]
+        
+        # 2. Dapatkan link undangan (invite link)
+        try:
+            invite_res = await client(ExportChatInviteRequest(peer=new_group))
+            invite_link = getattr(invite_res, "link", None)
+        except Exception as inv_err:
+            logger.warning(f"Gagal mengekspor link undangan untuk grup baru: {inv_err}")
+            invite_link = None
+
+        return {
+            "success": True,
+            "group_id": new_group.id,
+            "group_title": new_group.title,
+            "invite_link": invite_link,
+            "error": None
+        }
+    except Exception as e:
+        return {"success": False, "error": f"Gagal membuat grup: {type(e).__name__}: {e}"}
+    finally:
+        await client.disconnect()
+

@@ -72,6 +72,8 @@ STATE_AWAITING_GEN_COUNT = "awaiting_gen_count"
 STATE_AWAITING_SCR_CSV_FILENAME = "awaiting_scr_csv_filename"
 STATE_AWAITING_CNT_CSV_FILENAME = "awaiting_cnt_csv_filename"
 STATE_AWAITING_VAL_CSV_FILENAME = "awaiting_val_csv_filename"
+STATE_AWAITING_GROUP_TITLE = "awaiting_group_title"
+STATE_AWAITING_GROUP_ABOUT = "awaiting_group_about"
 STATE_BUSY = "busy"  # Sedang memproses (scrape/add)
 
 
@@ -124,6 +126,7 @@ MAIN_BUTTONS = [
     [Button.inline("🔐 Login Akun", b"menu_login")],
     [Button.inline("📋 Scrape Member", b"menu_scrape")],
     [Button.inline("➕ Add Member", b"menu_add")],
+    [Button.inline("🏗️ Buat Grup Otomatis", b"menu_create_group")],
     [Button.inline("🔢 Generator & Validator", b"menu_gen_val")],
     [Button.inline("📄 Lihat Data CSV", b"menu_view_csv")],
     [Button.inline("📊 Status", b"menu_status")],
@@ -333,6 +336,46 @@ async def run_validate_task(phone: str, numbers: list[str], admin_id: int, prefi
         logger.error(f"Error running validate task for {phone}: {e}")
         try:
             await bot.send_message(admin_id, f"❌ **Error tak terduga** pada akun `{phone}` saat validasi: {e}")
+        except Exception:
+            pass
+    finally:
+        if phone in active_tasks:
+            del active_tasks[phone]
+
+
+async def run_create_group_task(phone: str, title: str, about: str, admin_id: int):
+    """Wrapper untuk menjalankan proses pembuatan grup di background."""
+    try:
+        result = await userbot.create_megagroup(phone, title, about)
+        if not result["success"]:
+            await bot.send_message(
+                admin_id,
+                f"❌ **Gagal Membuat Grup!** (Akun: `{phone}`)\n\n{result['error']}",
+                parse_mode="md",
+            )
+            return
+
+        report = (
+            f"🏗️ **GRUP BERHASIL DIBUAT!**\n"
+            f"📱 Akun: `{phone}`\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"🏷️ Nama Grup: **{result['group_title']}**\n"
+            f"🆔 ID Grup: `{result['group_id']}`\n"
+        )
+        if result.get("invite_link"):
+            report += f"🔗 Tautan Undangan: {result['invite_link']}\n"
+        else:
+            report += f"⚠️ Tidak dapat menghasilkan tautan undangan otomatis.\n"
+
+        await bot.send_message(
+            admin_id,
+            report,
+            parse_mode="md",
+        )
+    except Exception as e:
+        logger.error(f"Error running create group task for {phone}: {e}")
+        try:
+            await bot.send_message(admin_id, f"❌ **Error tak terduga** pada akun `{phone}` saat membuat grup: {e}")
         except Exception:
             pass
     finally:
@@ -1108,6 +1151,128 @@ async def cb_stop_task(event):
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  CALLBACK: AUTO CREATE GROUP
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+@bot.on(events.CallbackQuery(data=b"menu_create_group"))
+async def cb_create_group(event):
+    """Pilihan akun untuk membuat grup baru."""
+    if not is_admin(event.sender_id):
+        return
+
+    await event.answer()
+
+    sessions = userbot.list_sessions()
+    if not sessions:
+        await event.respond(
+            "⚠️ **Belum ada akun!**\nSilakan login akun terlebih dahulu.",
+            buttons=[[Button.inline("🔐 Login Akun", b"menu_login")]],
+            parse_mode="md",
+        )
+        return
+
+    tasks = []
+    for p in sessions:
+        if p in active_tasks:
+            async def _fake(phone=p):
+                return {"authorized": True, "user": None, "phone": phone, "error": "Task sedang berjalan"}
+            tasks.append(_fake())
+        else:
+            tasks.append(userbot.check_session(p))
+    results = await asyncio.gather(*tasks)
+    active_sessions = [res["phone"] for res in results if res["authorized"]]
+
+    if not active_sessions:
+        await event.respond(
+            "⚠️ **Tidak ada akun aktif!**\nSemua session terputus. Silakan login kembali.",
+            buttons=[[Button.inline("🔐 Login Akun", b"menu_login")]],
+            parse_mode="md",
+        )
+        return
+
+    buttons = []
+    for phone in active_sessions:
+        buttons.append([Button.inline(f"📱 Akun: {phone}", f"crg_sel_{phone}".encode('utf-8'))])
+        
+    buttons.append([Button.inline("🔙 Menu Utama", b"back_menu")])
+
+    await event.respond(
+        " megagroup 🏗️ **Buat Grup Otomatis — Pilih Akun**\n\n"
+        "Pilih akun yang ingin Anda gunakan untuk membuat grup baru:",
+        buttons=buttons,
+        parse_mode="md",
+    )
+
+
+@bot.on(events.CallbackQuery(data=lambda d: d.startswith(b"crg_sel_")))
+async def cb_create_group_account_selected(event):
+    """Meminta nama grup dari admin."""
+    if not is_admin(event.sender_id):
+        return
+
+    phone = event.data.decode('utf-8').replace("crg_sel_", "")
+    await event.answer()
+
+    if phone in active_tasks:
+        await event.respond(
+            f"⚠️ Akun `{phone}` sedang sibuk menjalankan task lain.\n"
+            "Silakan tunggu hingga selesai atau pilih akun lain.",
+            buttons=[[Button.inline("🔙 Kembali", b"menu_create_group")]],
+            parse_mode="md"
+        )
+        return
+
+    set_state(event.sender_id, STATE_AWAITING_GROUP_TITLE, phone=phone)
+    await event.respond(
+        f"🏗️ **Buat Grup Otomatis (Akun: `{phone}`)**\n\n"
+        "Masukkan **Nama Grup** yang ingin dibuat:",
+        buttons=[[Button.inline("❌ Batal", b"menu_cancel")]],
+        parse_mode="md",
+    )
+
+
+@bot.on(events.CallbackQuery(data=lambda d: d.startswith(b"cfm_crg_")))
+async def cb_confirm_create_group(event):
+    """Konfirmasi dan jalankan proses pembuatan grup di background."""
+    if not is_admin(event.sender_id):
+        return
+
+    phone = event.data.decode('utf-8').replace("cfm_crg_", "")
+    
+    state = get_state(event.sender_id)
+    if state != STATE_AWAITING_CONFIRM:
+        await event.answer("⚠️ Sesi sudah kadaluarsa. Silakan mulai ulang.")
+        return
+
+    title = get_data(event.sender_id, "group_title")
+    about = get_data(event.sender_id, "group_about", "")
+    state_phone = get_data(event.sender_id, "phone")
+
+    if phone != state_phone or not title:
+        await event.respond("⚠️ Data tidak cocok atau tidak lengkap. Silakan mulai ulang.")
+        clear_state(event.sender_id)
+        return
+
+    await event.answer("Membuat grup...")
+
+    if phone in active_tasks:
+        await event.respond(f"⚠️ Akun `{phone}` sedang menjalankan task lain.")
+        clear_state(event.sender_id)
+        return
+
+    await event.respond(
+        f"⏳ **Memulai pembuatan grup `{title}` pada akun `{phone}`...**\n"
+        f"Proses berjalan di background. Anda akan menerima notifikasi jika selesai.",
+        parse_mode="md",
+    )
+
+    task = asyncio.create_task(run_create_group_task(phone, title, about, event.sender_id))
+    active_tasks[phone] = task
+
+    clear_state(event.sender_id)
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #  CALLBACK: GENERATOR & VALIDATOR
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -1727,6 +1892,69 @@ async def handle_text_input(event):
             buttons=[
                 [
                     Button.inline("✅ Ya, Mulai Validasi!", confirm_callback),
+                    Button.inline("❌ Batal", b"menu_cancel"),
+                ],
+            ],
+            parse_mode="md",
+        )
+        return
+
+    # ── STATE: Menunggu Nama Grup (Auto Create Group) ──
+    if state == STATE_AWAITING_GROUP_TITLE:
+        phone = get_data(event.sender_id, "phone")
+        if not phone:
+            await event.respond("❌ Nomor telepon tidak ditemukan. Silakan mulai ulang.")
+            clear_state(event.sender_id)
+            return
+
+        title = text.strip()
+        if not title:
+            await event.respond("❌ Nama grup tidak boleh kosong! Silakan masukkan nama grup:")
+            return
+
+        set_state(event.sender_id, STATE_AWAITING_GROUP_ABOUT, phone=phone, group_title=title)
+        await event.respond(
+            f"🏗️ **Buat Grup Otomatis (Akun: `{phone}`)**\n"
+            f"Nama Grup: `{title}`\n\n"
+            "Masukkan **Deskripsi Grup** (atau ketik `/skip` untuk mengosongkan):",
+            buttons=[[Button.inline("❌ Batal", b"menu_cancel")]],
+            parse_mode="md",
+        )
+        return
+
+    # ── STATE: Menunggu Deskripsi Grup (Auto Create Group) ──
+    if state == STATE_AWAITING_GROUP_ABOUT:
+        phone = get_data(event.sender_id, "phone")
+        title = get_data(event.sender_id, "group_title")
+        if not phone or not title:
+            await event.respond("❌ Data sesi tidak lengkap. Silakan mulai ulang.")
+            clear_state(event.sender_id)
+            return
+
+        about = text.strip()
+        if about.lower() == "/skip":
+            about = ""
+
+        set_state(
+            event.sender_id,
+            STATE_AWAITING_CONFIRM,
+            phone=phone,
+            group_title=title,
+            group_about=about,
+        )
+
+        confirm_callback = f"cfm_crg_{phone}".encode('utf-8')
+
+        await event.respond(
+            f"🏗️ **Konfirmasi Buat Grup**\n"
+            f"📱 Akun: `{phone}`\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"• Nama Grup: **{title}**\n"
+            f"• Deskripsi: **{about or '(Kosong)'}**\n\n"
+            f"Apakah Anda ingin membuat grup ini sekarang?",
+            buttons=[
+                [
+                    Button.inline("✅ Ya, Buat Grup!", confirm_callback),
                     Button.inline("❌ Batal", b"menu_cancel"),
                 ],
             ],
