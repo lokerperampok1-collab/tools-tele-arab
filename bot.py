@@ -347,7 +347,11 @@ async def run_validate_task(phone: str, numbers: list[str], admin_id: int, prefi
 async def run_create_group_task(phone: str, title: str, group_type: str, about: str, admin_id: int):
     """Wrapper untuk menjalankan proses pembuatan grup di background."""
     try:
-        result = await userbot.create_group(phone, title, group_type, admin_id, about)
+        # Dapatkan username bot pembantu sebagai opsi fallback untuk grup biasa
+        bot_me = await bot.get_me()
+        bot_username = bot_me.username or ""
+
+        result = await userbot.create_group(phone, title, group_type, admin_id, bot_username, about)
         if not result["success"]:
             await bot.send_message(
                 admin_id,

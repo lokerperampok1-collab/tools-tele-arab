@@ -1044,7 +1044,7 @@ async def validate_phone_numbers(
         await client.disconnect()
 
 
-async def create_group(phone: str, title: str, group_type: str, admin_id: int, about: str = "") -> dict:
+async def create_group(phone: str, title: str, group_type: str, admin_id: int, bot_username: str = "", about: str = "") -> dict:
     """
     Membuat grup baru (Supergroup atau Grup Biasa) dan mengembalikan info grup serta link undangannya.
     """
@@ -1060,15 +1060,45 @@ async def create_group(phone: str, title: str, group_type: str, admin_id: int, a
         # 1. Buat grup berdasarkan tipe
         if group_type == "basic":
             # Grup biasa memerlukan minimal 1 anggota selain pembuat saat awal dibuat.
-            # Kita sertakan admin_id (admin Telegram bot) sebagai anggota pertama.
+            # Kita coba admin_id (admin Telegram bot) sebagai anggota pertama.
             users_to_add = []
             if admin_id:
                 try:
                     admin_entity = await client.get_entity(int(admin_id))
                     users_to_add.append(admin_entity)
+                    logger.info(f"Menggunakan admin_id {admin_id} untuk pembuatan grup biasa.")
                 except Exception as ent_err:
                     logger.warning(f"Gagal me-resolve entity admin_id {admin_id}: {ent_err}")
-                    users_to_add.append(int(admin_id))
+            
+            # Fallback 1: Coba gunakan bot_username
+            if not users_to_add and bot_username:
+                try:
+                    bot_entity = await client.get_entity(bot_username)
+                    users_to_add.append(bot_entity)
+                    logger.info(f"Menggunakan bot_username {bot_username} sebagai fallback.")
+                except Exception as bot_err:
+                    logger.warning(f"Gagal me-resolve bot_username {bot_username}: {bot_err}")
+
+            # Fallback 2: Ambil kontak pertama yang aktif dari akun userbot
+            if not users_to_add:
+                try:
+                    from telethon.tl.functions.contacts import GetContactsRequest
+                    contacts_res = await client(GetContactsRequest(hash=0))
+                    existing_users = getattr(contacts_res, "users", [])
+                    for u in existing_users:
+                        if not u.bot and not u.deleted:
+                            users_to_add.append(u)
+                            logger.info(f"Menggunakan kontak {u.id} ({u.first_name}) sebagai fallback pembuatan grup biasa.")
+                            break
+                except Exception as contacts_err:
+                    logger.warning(f"Gagal mengambil kontak fallback: {contacts_err}")
+
+            if not users_to_add:
+                return {
+                    "success": False, 
+                    "error": "Telegram mewajibkan minimal 1 anggota lain untuk membuat grup biasa, "
+                             "namun admin_id, bot_username, dan kontak akun tidak dapat di-resolve oleh sesi userbot ini."
+                }
 
             result = await client(CreateChatRequest(
                 users=users_to_add,
