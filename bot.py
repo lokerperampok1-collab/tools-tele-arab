@@ -72,6 +72,7 @@ STATE_AWAITING_GEN_COUNT = "awaiting_gen_count"
 STATE_AWAITING_SCR_CSV_FILENAME = "awaiting_scr_csv_filename"
 STATE_AWAITING_CNT_CSV_FILENAME = "awaiting_cnt_csv_filename"
 STATE_AWAITING_VAL_CSV_FILENAME = "awaiting_val_csv_filename"
+STATE_AWAITING_GROUP_TYPE = "awaiting_group_type"
 STATE_AWAITING_GROUP_TITLE = "awaiting_group_title"
 STATE_AWAITING_GROUP_ABOUT = "awaiting_group_about"
 STATE_BUSY = "busy"  # Sedang memproses (scrape/add)
@@ -343,10 +344,10 @@ async def run_validate_task(phone: str, numbers: list[str], admin_id: int, prefi
             del active_tasks[phone]
 
 
-async def run_create_group_task(phone: str, title: str, about: str, admin_id: int):
+async def run_create_group_task(phone: str, title: str, group_type: str, about: str, admin_id: int):
     """Wrapper untuk menjalankan proses pembuatan grup di background."""
     try:
-        result = await userbot.create_megagroup(phone, title, about)
+        result = await userbot.create_group(phone, title, group_type, admin_id, about)
         if not result["success"]:
             await bot.send_message(
                 admin_id,
@@ -355,9 +356,11 @@ async def run_create_group_task(phone: str, title: str, about: str, admin_id: in
             )
             return
 
+        g_type_name = "Grup Biasa" if group_type == "basic" else "Grup Super"
         report = (
             f"🏗️ **GRUP BERHASIL DIBUAT!**\n"
             f"📱 Akun: `{phone}`\n"
+            f"🔌 Tipe: **{g_type_name}**\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
             f"🏷️ Nama Grup: **{result['group_title']}**\n"
             f"🆔 ID Grup: `{result['group_id']}`\n"
@@ -1206,7 +1209,7 @@ async def cb_create_group(event):
 
 @bot.on(events.CallbackQuery(data=lambda d: d.startswith(b"crg_sel_")))
 async def cb_create_group_account_selected(event):
-    """Meminta nama grup dari admin."""
+    """Menampilkan pilihan tipe grup."""
     if not is_admin(event.sender_id):
         return
 
@@ -1222,9 +1225,43 @@ async def cb_create_group_account_selected(event):
         )
         return
 
-    set_state(event.sender_id, STATE_AWAITING_GROUP_TITLE, phone=phone)
+    set_state(event.sender_id, STATE_AWAITING_GROUP_TYPE, phone=phone)
     await event.respond(
         f"🏗️ **Buat Grup Otomatis (Akun: `{phone}`)**\n\n"
+        "Pilih **Tipe Grup** yang ingin dibuat:\n\n"
+        "• **Grup Biasa**: Grup standar, kapasitas maks 200 member (Anda akan otomatis dimasukkan ke grup).\n"
+        "• **Grup Super**: Grup canggih, kapasitas maks 200.000 member, mendukung link publik & deskripsi.",
+        buttons=[
+            [
+                Button.inline("👥 Grup Biasa", f"crg_type_basic_{phone}".encode('utf-8')),
+                Button.inline("⚡ Grup Super", f"crg_type_supergroup_{phone}".encode('utf-8'))
+            ],
+            [Button.inline("❌ Batal", b"menu_cancel")]
+        ],
+        parse_mode="md",
+    )
+
+
+@bot.on(events.CallbackQuery(data=lambda d: d.startswith(b"crg_type_")))
+async def cb_create_group_type_selected(event):
+    """Menyimpan tipe grup pilihan user dan meminta Nama Grup."""
+    if not is_admin(event.sender_id):
+        return
+
+    data = event.data.decode('utf-8').replace("crg_type_", "")
+    if "_" not in data:
+        await event.answer("⚠️ Sesi tidak valid.")
+        return
+        
+    g_type, phone = data.split("_", 1)
+    await event.answer()
+
+    set_state(event.sender_id, STATE_AWAITING_GROUP_TITLE, phone=phone, group_type=g_type)
+    
+    g_type_name = "Grup Biasa" if g_type == "basic" else "Grup Super"
+    await event.respond(
+        f"🏗️ **Buat Grup Otomatis (Akun: `{phone}`)**\n"
+        f"Tipe Terpilih: **{g_type_name}**\n\n"
         "Masukkan **Nama Grup** yang ingin dibuat:",
         buttons=[[Button.inline("❌ Batal", b"menu_cancel")]],
         parse_mode="md",
@@ -1245,6 +1282,7 @@ async def cb_confirm_create_group(event):
         return
 
     title = get_data(event.sender_id, "group_title")
+    group_type = get_data(event.sender_id, "group_type", "supergroup")
     about = get_data(event.sender_id, "group_about", "")
     state_phone = get_data(event.sender_id, "phone")
 
@@ -1266,7 +1304,7 @@ async def cb_confirm_create_group(event):
         parse_mode="md",
     )
 
-    task = asyncio.create_task(run_create_group_task(phone, title, about, event.sender_id))
+    task = asyncio.create_task(run_create_group_task(phone, title, group_type, about, event.sender_id))
     active_tasks[phone] = task
 
     clear_state(event.sender_id)
@@ -1902,6 +1940,7 @@ async def handle_text_input(event):
     # ── STATE: Menunggu Nama Grup (Auto Create Group) ──
     if state == STATE_AWAITING_GROUP_TITLE:
         phone = get_data(event.sender_id, "phone")
+        group_type = get_data(event.sender_id, "group_type", "supergroup")
         if not phone:
             await event.respond("❌ Nomor telepon tidak ditemukan. Silakan mulai ulang.")
             clear_state(event.sender_id)
@@ -1912,20 +1951,48 @@ async def handle_text_input(event):
             await event.respond("❌ Nama grup tidak boleh kosong! Silakan masukkan nama grup:")
             return
 
-        set_state(event.sender_id, STATE_AWAITING_GROUP_ABOUT, phone=phone, group_title=title)
-        await event.respond(
-            f"🏗️ **Buat Grup Otomatis (Akun: `{phone}`)**\n"
-            f"Nama Grup: `{title}`\n\n"
-            "Masukkan **Deskripsi Grup** (atau ketik `/skip` untuk mengosongkan):",
-            buttons=[[Button.inline("❌ Batal", b"menu_cancel")]],
-            parse_mode="md",
-        )
+        if group_type == "basic":
+            set_state(
+                event.sender_id,
+                STATE_AWAITING_CONFIRM,
+                phone=phone,
+                group_title=title,
+                group_type=group_type,
+                group_about=""
+            )
+            confirm_callback = f"cfm_crg_{phone}".encode('utf-8')
+            await event.respond(
+                f"🏗️ **Konfirmasi Buat Grup**\n"
+                f"📱 Akun: `{phone}`\n"
+                f"🔌 Tipe: **Grup Biasa**\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                f"• Nama Grup: **{title}**\n\n"
+                f"Apakah Anda ingin membuat grup ini sekarang?\n"
+                f"_(Catatan: Sesi akun Anda dan akun admin ini akan otomatis bergabung ke grup baru.)_",
+                buttons=[
+                    [
+                        Button.inline("✅ Ya, Buat Grup!", confirm_callback),
+                        Button.inline("❌ Batal", b"menu_cancel"),
+                    ],
+                ],
+                parse_mode="md",
+            )
+        else:
+            set_state(event.sender_id, STATE_AWAITING_GROUP_ABOUT, phone=phone, group_title=title, group_type=group_type)
+            await event.respond(
+                f"🏗️ **Buat Grup Otomatis (Akun: `{phone}`)**\n"
+                f"Nama Grup: `{title}`\n\n"
+                "Masukkan **Deskripsi Grup** (atau ketik `/skip` untuk mengosongkan):",
+                buttons=[[Button.inline("❌ Batal", b"menu_cancel")]],
+                parse_mode="md",
+            )
         return
 
     # ── STATE: Menunggu Deskripsi Grup (Auto Create Group) ──
     if state == STATE_AWAITING_GROUP_ABOUT:
         phone = get_data(event.sender_id, "phone")
         title = get_data(event.sender_id, "group_title")
+        group_type = get_data(event.sender_id, "group_type", "supergroup")
         if not phone or not title:
             await event.respond("❌ Data sesi tidak lengkap. Silakan mulai ulang.")
             clear_state(event.sender_id)
@@ -1940,6 +2007,7 @@ async def handle_text_input(event):
             STATE_AWAITING_CONFIRM,
             phone=phone,
             group_title=title,
+            group_type=group_type,
             group_about=about,
         )
 
@@ -1948,6 +2016,7 @@ async def handle_text_input(event):
         await event.respond(
             f"🏗️ **Konfirmasi Buat Grup**\n"
             f"📱 Akun: `{phone}`\n"
+            f"🔌 Tipe: **Grup Super**\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
             f"• Nama Grup: **{title}**\n"
             f"• Deskripsi: **{about or '(Kosong)'}**\n\n"

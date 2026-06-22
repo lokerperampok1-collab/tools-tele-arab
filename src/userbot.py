@@ -39,7 +39,7 @@ from telethon.tl.functions.channels import (
     InviteToChannelRequest,
     CreateChannelRequest,
 )
-from telethon.tl.functions.messages import ExportChatInviteRequest
+from telethon.tl.functions.messages import ExportChatInviteRequest, CreateChatRequest
 from telethon.tl.types import (
     ChannelParticipantsSearch,
     InputPeerUser,
@@ -1044,9 +1044,9 @@ async def validate_phone_numbers(
         await client.disconnect()
 
 
-async def create_megagroup(phone: str, title: str, about: str = "") -> dict:
+async def create_group(phone: str, title: str, group_type: str, admin_id: int, about: str = "") -> dict:
     """
-    Membuat supergroup (megagroup) baru dan mengembalikan info grup serta link undangannya.
+    Membuat grup baru (Supergroup atau Grup Biasa) dan mengembalikan info grup serta link undangannya.
     """
     if not phone:
         return {"success": False, "error": "Nomor telepon tidak ditentukan."}
@@ -1057,12 +1057,30 @@ async def create_megagroup(phone: str, title: str, about: str = "") -> dict:
         if not await client.is_user_authorized():
             return {"success": False, "error": "Session expired! Login ulang."}
 
-        # 1. Buat megagroup (supergroup)
-        result = await client(CreateChannelRequest(
-            title=title,
-            about=about,
-            megagroup=True
-        ))
+        # 1. Buat grup berdasarkan tipe
+        if group_type == "basic":
+            # Grup biasa memerlukan minimal 1 anggota selain pembuat saat awal dibuat.
+            # Kita sertakan admin_id (admin Telegram bot) sebagai anggota pertama.
+            users_to_add = []
+            if admin_id:
+                try:
+                    admin_entity = await client.get_entity(int(admin_id))
+                    users_to_add.append(admin_entity)
+                except Exception as ent_err:
+                    logger.warning(f"Gagal me-resolve entity admin_id {admin_id}: {ent_err}")
+                    users_to_add.append(int(admin_id))
+
+            result = await client(CreateChatRequest(
+                users=users_to_add,
+                title=title
+            ))
+        else:
+            # Default ke supergroup/megagroup
+            result = await client(CreateChannelRequest(
+                title=title,
+                about=about,
+                megagroup=True
+            ))
         
         if not result or not result.chats:
             return {"success": False, "error": "Gagal membuat grup (response kosong)."}
